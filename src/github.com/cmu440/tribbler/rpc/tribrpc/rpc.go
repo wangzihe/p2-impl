@@ -3,6 +3,7 @@
 
 package tribrpc
 
+// STAFF USE ONLY! Students should not use this interface in their code.
 type RemoteTribServer interface {
 	CreateUser(args *CreateUserArgs, reply *CreateUserReply) error
 	AddSubscription(args *SubscriptionArgs, reply *SubscriptionReply) error
@@ -27,7 +28,7 @@ type TribServer struct {
 //     tribServer := new(tribServer)
 //
 //     // Create the server socket that will listen for incoming RPCs.
-//     listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+//     listener, err := net.Listen("tcp", myHostPort)
 //     if err != nil {
 //         return nil, err
 //     }
