@@ -2,6 +2,7 @@ package libstore
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
@@ -35,7 +36,8 @@ type libstore struct {
 // need to create a brand new HTTP handler to serve the requests (the Libstore may
 // simply reuse the TribServer's HTTP handler since the two run in the same process).
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
-	return nil, errors.New("not implemented")
+	fmt.Printf("NewLibstore: hello world\n")
+	return nil, nil
 }
 
 func (ls *libstore) Get(key string) (string, error) {
@@ -60,4 +62,9 @@ func (ls *libstore) AppendToList(key, newItem string) error {
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
 	return errors.New("not implemented")
+}
+
+// This function is used by TribServer to handle CreateUser request.
+func HandleCreateUser() {
+	fmt.Println("handleCreateUser: called\n")
 }
