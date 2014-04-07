@@ -30,16 +30,19 @@ type storageServer struct {
     simpleStore   map[string]string
     listStore     map[string]([]string)
 
-    // locks for primary data structures
+    // locks for primary data structures; also lock protector maps
     simpleLock, listLock    &sync.Mutex
 
     // locks for each element of primary data structures
     simpleProtectors, listProtectors    map[string]protector
+
+    libstoreRPCs    *(rpc.Client)
 }
 
 type owner struct {
     leaseEnd    time.Duration
     HostPort    string
+    RPC
 }
 
 type protector struct {
@@ -281,7 +284,7 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 
         } else {    // grant lease
             // prepare reply
-            duration := time.Duration(LeaseSeconds) * time.Second
+            duration := time.Duration(storagerpc.LeaseSeconds) * time.Second
             reply.Lease = &storagerpc.Lease{Granted: true, Duration: duration}
 
             // record lease
@@ -302,15 +305,6 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 // Put inserts the specified key/value pair into the data store. If
 // the key does not fall within the storage server's range, it should
 // reply with status WrongServer.
-//type PutArgs struct {
-//	Key   string
-//	Value string
-//}
-//
-//type PutReply struct {
-//	Status Status
-//}
-//
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
 
     // check that the key is in the server's hash range
@@ -320,7 +314,7 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
         return nil
     }
 
-    // check whether the key exists
+    // if key doesn't exist, just add it
     ss.simpleStoreLock.Lock()
     if _, pres := ss.simpleStore[args.Key]; !pres {
         ss.simpleStore[args.Key] = args.Value
@@ -336,20 +330,45 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
         return nil
     }
 
-    // don't need to lock the whole map, just that element
+    // switch to fine-grained locking
     prot := ss.simpleProtectors[args.Key]
     ss.simpleStoreLock.Unlock()
     prot.storeLock.Lock()
 
+    // indicate modifying
     prot.bMLock.Lock()
     prot.beingModified = true
     prot.bMLock.Unlock()
 
+    // revoke unexpired leases
+    l := prot.leaseOwners
+    for ; l.Len() > 0; {
+        e := l.Front()
 
-    // TODO: revoke leases
+        guard := time.Duration(storagerpc.LeaseGuardSeconds) * time.Second
+        // if unexpired
+        if e.Value.(*owner).LeaseEnd.Add(guard).After(time.Now()) {
 
+            // prepare RPC
+            RLArgs := &RevokeLeaseArgs{args.Key}
+            RLReply := new(RevokeLeaseReply)
+            libRPC, err := rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
+	        if err != nil {
+                return err
+            }
+
+            err := masterRPC.Call("LeaseCallbacks.RevokeLease",RLArgs,RLReply)
+	        if err != nil {
+                return err
+            }
+        }
+        l.Remove(e)
+    }
+
+    // modify/enter value
     ss.simpleStore[args.Key] = args.Value
 
+    // no longer modifying
     prot.bMLock.Lock()
     prot.beingModified = false
     prot.bMLock.Unlock()
@@ -381,7 +400,86 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
         reply.Status = storagerpc.WrongServer
         return nil
     }
-	return errors.New("not implemented")
+
+    // if key doesn't exist, just add it
+    ss.listStoreLock.Lock()
+    if _, pres := ss.listStore[args.Key]; !pres {
+
+        ss.listStore[args.Key] := []string { args.Value }
+
+        // make new protector
+        prot := &protector{leaseOwners: list.New()}
+        prot.storeLock = new(&sync.Mutex)
+        prot.bMLock = new(&sync.Mutex)
+        ss.listProtectors[args.Key] = prot
+
+        ss.listStoreLock.Unlock()
+        reply.Status = storagerpc.OK
+        return nil
+    }
+
+    // switch to fine-grained locking
+    prot := ss.listProtectors[args.Key]
+    ss.listStoreLock.Unlock()
+    prot.storeLock.Lock()
+
+    // indicate modifying
+    prot.bMLock.Lock()
+    prot.beingModified = true
+    prot.bMLock.Unlock()
+
+    // revoke unexpired leases
+    l := prot.leaseOwners
+    for ; l.Len() > 0; {
+        e := l.Front()
+
+        guard := time.Duration(storagerpc.LeaseGuardSeconds) * time.Second
+        // if unexpired
+        if e.Value.(*owner).LeaseEnd.Add(guard).After(time.Now()) {
+
+            // prepare RPC
+            RLArgs := &RevokeLeaseArgs{args.Key}
+            RLReply := new(RevokeLeaseReply)
+            libRPC, err := rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
+	        if err != nil {
+                return err
+            }
+
+            err := masterRPC.Call("LeaseCallbacks.RevokeLease",RLArgs,RLReply)
+	        if err != nil {
+                return err
+            }
+        }
+        l.Remove(e)
+    }
+
+    // check whether item already exists
+    entryL := ss.listStore[args.Key]
+    for i := 0; i < len(); i++ {
+        if  entryL[i] == args.Value {
+
+            // no longer modifying
+            prot.bMLock.Lock()
+            prot.beingModified = false
+            prot.bMLock.Unlock()
+            prot.storeLock.Unlock()
+
+            reply.Status = ItemExists
+            return nil
+        }
+    }
+
+    // append value to appropriate list
+    ss.listStore[args.Key] = append(ss.listStore[args.Key], args.Value)
+
+    // no longer modifying
+    prot.bMLock.Lock()
+    prot.beingModified = false
+    prot.bMLock.Unlock()
+
+    prot.storeLock.Unlock()
+    reply.Status = storagerpc.OK
+	return nil
 }
 
 // RemoveFromList retrieves the specified key from the data store and removes
