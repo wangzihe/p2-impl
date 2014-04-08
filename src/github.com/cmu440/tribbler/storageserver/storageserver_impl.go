@@ -2,6 +2,7 @@ package storageserver
 
 import (
 	"container/list"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -64,6 +65,7 @@ type protector struct {
 // This function should return only once all storage servers have joined the ring,
 // and should return a non-nil error if the storage server could not be started.
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
+	fmt.Printf("new server created\n")
 
 	// initialize the storageServer struct
 	server := new(storageServer)
@@ -84,9 +86,9 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	server.libstoreLock = new(sync.RWMutex)
 
 	// logging stuff
-	fileName := strconv.Itoa(port) + ".txt"
+	fileName := "./" + strconv.Itoa(port) + ".txt"
 	if masterServerHostPort == "" {
-		fileName = "master.txt"
+		fileName = "./master.txt"
 	}
 	logfile, _ := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0666)
 	server.LOGV = log.New(logfile, "VERBOSE", log.Lmicroseconds|log.Lshortfile)
@@ -398,16 +400,22 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 		if e.Value.(*owner).leaseEnd.Add(guard).After(time.Now()) {
 
 			// prepare RPC
-			RLArgs := &storagerpc.RevokeLeaseArgs{args.Key}
-			RLReply := new(storagerpc.RevokeLeaseReply)
+			RLArgs := &storagerpc.RevokeLeaseArgs{Key: args.Key}
+			var RLReply storagerpc.RevokeLeaseReply
 
 			// get tcp connection appropriate libstore, from cache if possible
 			ss.libstoreLock.RLock()
-			libRPC, pres := ss.libstores[e.Value.(*owner).HostPort]
+			ss.LOGV.Printf("lease callback is %s\n", e.Value.(*owner).HostPort)
+			var libRPC *rpc.Client
+			var pres bool
+			libRPC, pres = ss.libstores[e.Value.(*owner).HostPort]
 			ss.libstoreLock.RUnlock()
 			if !pres { // add to cache if not present
-				libRPC, err := rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
+				var err error
+				libRPC, err = rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
 				ss.libstoreLock.Lock()
+				//TODO should do another check to make sure nobody added this connection before we make changes
+				//     need to check whether the value still missing in the map
 				ss.libstores[e.Value.(*owner).HostPort] = libRPC
 				ss.libstoreLock.Unlock()
 				if err != nil {
@@ -415,15 +423,17 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 				}
 			}
 
-			go func() {
-				err := libRPC.Call("LeaseCallbacks.RevokeLease", RLArgs, RLReply)
-				ss.LOGV.Printf("revoked lease (key: %s) ", args.Key)
-				if err != nil {
-					ss.LOGV.Printf("without error\n")
-				} else {
-					ss.LOGV.Printf("with error:\n", err.Error())
-				}
-			}()
+			ss.LOGV.Printf("about to revoke lease (key : %s)\n", args.Key)
+			if libRPC == nil {
+				ss.LOGV.Printf("shit\n")
+			}
+			err := libRPC.Call("LeaseCallbacks.RevokeLease", RLArgs, &RLReply)
+			ss.LOGV.Printf("revoked lease (key: %s) ", args.Key)
+			if err != nil {
+				ss.LOGV.Printf("without error\n")
+			} else {
+				ss.LOGV.Printf("with error:\n", err.Error())
+			}
 		}
 		l.Remove(e)
 	}

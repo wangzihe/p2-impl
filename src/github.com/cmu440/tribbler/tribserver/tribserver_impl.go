@@ -34,10 +34,6 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 	}
 	server.Lib = lib
 
-    if ts.Lib == nil {
-        fmt.Println("ts.Lib == nil in CreateUser\n")
-    }
-
 	// create the server socket that will listen for incoming RPCs.
 	listener, err := net.Listen("tcp", myHostPort)
 	if err != nil {
@@ -64,10 +60,6 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {
 
 	key := args.UserID + ":create"
-
-    if ts.Lib == nil {
-        fmt.Println("ts.Lib == nil in CreateUser\n")
-    }
 
 	if _, err := ts.Lib.Get(key); err != nil { // key does not already exist
 		err = ts.Lib.Put(key, args.UserID) // add the key
