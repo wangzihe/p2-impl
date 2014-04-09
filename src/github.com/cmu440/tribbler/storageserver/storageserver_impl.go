@@ -3,11 +3,11 @@ package storageserver
 import (
 	"container/list"
 	"fmt"
-	"log"
+	//"log"
 	"net"
 	"net/http"
 	"net/rpc"
-	"os"
+	//"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,13 +36,13 @@ type storageServer struct {
 	simpleLock, listLock *sync.Mutex
 
 	// locks for each element of primary data structures
-	simpleProtectors, listProtectors map[string]protector
+	simpleProtectors, listProtectors map[string](*protector)
 
 	// cache libstore RPC connections for lease revoking
 	libstores    map[string](*rpc.Client)
 	libstoreLock *sync.RWMutex
 
-	LOGV *log.Logger
+	//LOGV *log.Logger
 }
 
 type owner struct {
@@ -80,19 +80,18 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	server.listLock = new(sync.Mutex)
 	server.simpleStore = make(map[string]string)
 	server.listStore = make(map[string]([]string))
-	server.simpleProtectors = make(map[string]protector)
-	server.listProtectors = make(map[string]protector)
+	server.simpleProtectors = make(map[string](*protector))
+	server.listProtectors = make(map[string](*protector))
 	server.libstores = make(map[string](*rpc.Client))
 	server.libstoreLock = new(sync.RWMutex)
 
 	// logging stuff
-	fileName := "./" + strconv.Itoa(port) + ".txt"
-	if masterServerHostPort == "" {
-		fileName = "./master.txt"
-	}
-	logfile, _ := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0666)
-	server.LOGV = log.New(logfile, "VERBOSE", log.Lmicroseconds|log.Lshortfile)
-	server.LOGV.Printf("started log, nodeID: %d\n", nodeID)
+	//fileName := "./" + strconv.Itoa(port) + ".txt"
+	//if masterServerHostPort == "" {
+	//	fileName = "./master.txt"
+	//}
+	//logfile, _ := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0666)
+	//server.LOGV = log.New(logfile, "VERBOSE", log.Lmicroseconds|log.Lshortfile)
 
 	// create the server socket that will listen for incoming RPCs.
 	listener, err := net.Listen("tcp", net.JoinHostPort("localhost", strconv.Itoa(port)))
@@ -119,10 +118,9 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 			<-server.allRegisteredChan // wait until all nodes are registered
 		}
 		server.minKey = prevNodeID(nodeID, server.nodes)
-		server.LOGV.Printf("minKey: %d, maxKey: %d \n", server.minKey, server.maxKey)
 		return server, nil
 
-		// if slave, call RegisterServer every second until acknowledged
+    // if slave, call RegisterServer every second until acknowledged
 	} else {
 
 		// prepare to call RegisterServer
@@ -130,27 +128,26 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 		if err != nil {
 			return nil, err
 		}
-		args := &storagerpc.RegisterArgs{ServerInfo: *node}
-		reply := &storagerpc.RegisterReply{Status: storagerpc.NotReady}
-
+        doneChan := make(chan *storagerpc.RegisterReply, 5)
 		for {
+
 			go func() {
-				err := masterRPC.Call("StorageServer.RegisterServer", args, reply)
-				server.LOGV.Printf("registered server %d ", server.maxKey)
-				if err != nil {
-					server.LOGV.Printf("without error\n")
-				} else {
-					server.LOGV.Printf("with error:\n", err.Error())
-				}
+
+		        args := &storagerpc.RegisterArgs{ServerInfo: *node}
+		        reply := &storagerpc.RegisterReply{Status: storagerpc.NotReady}
+
+				masterRPC.Call("StorageServer.RegisterServer", args, reply)
+                doneChan<-reply
 			}()
-			if reply.Status == storagerpc.OK {
+
+            select {
+		    case <-time.After(time.Duration(1000) * time.Millisecond):
+            case reply := <- doneChan:
 				server.nodes = reply.Servers
 				server.minKey = prevNodeID(nodeID, server.nodes)
-				server.LOGV.Printf("minKey: %d, maxKey: %d \n", server.minKey, server.maxKey)
 				masterRPC.Close()
 				return server, nil
-			}
-			<-time.After(time.Duration(1000) * time.Millisecond)
+            }
 		}
 	}
 }
@@ -236,8 +233,6 @@ func inRange(hash, minKey, maxKey uint32) bool {
 // KeyNotFound.
 func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetReply) error {
 
-	ss.LOGV.Println("REACHED GET")
-
 	// check that the key is in the server's hash range
 	keyHash := libstore.StoreHash(strings.Split(args.Key, ":")[0])
 	if !inRange(keyHash, ss.minKey, ss.maxKey) {
@@ -277,10 +272,6 @@ func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetRepl
 
 		reply.Status = storagerpc.OK
 		reply.Value = val
-		ss.LOGV.Printf("Get: %s   Got: %s\n", args.Key, val)
-		if args.WantLease {
-			ss.LOGV.Printf("Lease Wanted; Granted: %b\n", reply.Lease.Granted)
-		}
 		return nil
 	}
 
@@ -335,13 +326,6 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 
 		reply.Status = storagerpc.OK
 		reply.Value = val
-		ss.LOGV.Printf("GetList: %s   Got:  (length: %d)\n", args.Key, len(val))
-		for i := 0; i < len(val); i++ {
-			ss.LOGV.Printf("%s \n", val[i])
-		}
-		if args.WantLease {
-			ss.LOGV.Printf("Lease Wanted; Granted: %b\n", reply.Lease.Granted)
-		}
 		return nil
 	}
 
@@ -354,8 +338,6 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 // the key does not fall within the storage server's range, it should
 // reply with status WrongServer.
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-
-	ss.LOGV.Printf("Put Key: %s   Value: %s", args.Key, args.Value)
 
 	// check that the key is in the server's hash range
 	keyHash := libstore.StoreHash(strings.Split(args.Key, ":")[0])
@@ -371,9 +353,10 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 
 		// make new protector
 		prot := &protector{leaseOwners: list.New()}
+        prot.beingModified = false
 		prot.storeLock = new(sync.Mutex)
 		prot.bMLock = new(sync.Mutex)
-		ss.simpleProtectors[args.Key] = *prot
+		ss.simpleProtectors[args.Key] = prot
 
 		ss.simpleLock.Unlock()
 		reply.Status = storagerpc.OK
@@ -392,10 +375,18 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 
 	// revoke unexpired leases
 	l := prot.leaseOwners
+    lastExpiry := time.Now()
+    numToRevoke := 0
+    revokedChan := make(chan int, l.Len())
 	for l.Len() > 0 {
 		e := l.Front()
 
 		guard := time.Duration(storagerpc.LeaseGuardSeconds) * time.Second
+
+        if e.Value.(*owner).leaseEnd.Add(guard).After(lastExpiry) {
+            lastExpiry = e.Value.(*owner).leaseEnd.Add(guard)
+        }
+
 		// if unexpired
 		if e.Value.(*owner).leaseEnd.Add(guard).After(time.Now()) {
 
@@ -405,38 +396,64 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 
 			// get tcp connection appropriate libstore, from cache if possible
 			ss.libstoreLock.RLock()
-			ss.LOGV.Printf("lease callback is %s\n", e.Value.(*owner).HostPort)
 			var libRPC *rpc.Client
 			var pres bool
 			libRPC, pres = ss.libstores[e.Value.(*owner).HostPort]
 			ss.libstoreLock.RUnlock()
 			if !pres { // add to cache if not present
-				var err error
-				libRPC, err = rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
-				ss.libstoreLock.Lock()
-				//TODO should do another check to make sure nobody added this connection before we make changes
-				//     need to check whether the value still missing in the map
-				ss.libstores[e.Value.(*owner).HostPort] = libRPC
-				ss.libstoreLock.Unlock()
-				if err != nil {
-					return err
-				}
+
+		        ss.libstoreLock.Lock()
+                // check that connection wasn't added while we switched locks
+			    libRPC, pres = ss.libstores[e.Value.(*owner).HostPort]
+			    if !pres { // add to cache if not present
+				    var err error
+				    libRPC, err = rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
+				    ss.libstores[e.Value.(*owner).HostPort] = libRPC
+				    if err != nil {
+				        return err
+				    }
+                }
+			    ss.libstoreLock.Unlock()
 			}
 
-			ss.LOGV.Printf("about to revoke lease (key : %s)\n", args.Key)
-			if libRPC == nil {
-				ss.LOGV.Printf("shit\n")
-			}
-			err := libRPC.Call("LeaseCallbacks.RevokeLease", RLArgs, &RLReply)
-			ss.LOGV.Printf("revoked lease (key: %s) ", args.Key)
-			if err != nil {
-				ss.LOGV.Printf("without error\n")
-			} else {
-				ss.LOGV.Printf("with error:\n", err.Error())
-			}
+            numToRevoke++
+
+	        go func() { // goroutine calls RevokeLease
+			    libRPC.Call("LeaseCallbacks.RevokeLease", RLArgs, &RLReply)
+                revokedChan <- 1
+	        }()
 		}
 		l.Remove(e)
 	}
+
+    doneChan := make(chan int, 10)
+
+	go func() { // goroutine counts down revokedLeases
+        for ; numToRevoke > 0; {
+		    select {
+		    case <-revokedChan:
+                numToRevoke--
+            case <- doneChan:
+                return
+            }
+        }
+        doneChan<-1
+        doneChan<-1
+	}()
+
+	go func() { // goroutine waits for last lease to expire
+        waitTime := lastExpiry.Sub(time.Now())
+        if int64(waitTime) > 0 {
+            select {
+		    case <-time.After(waitTime):
+            case <- doneChan:
+                return
+            }
+        }
+        doneChan<-1
+        doneChan<-1
+	}()
+    <-doneChan
 
 	// modify/enter value
 	ss.simpleStore[args.Key] = args.Value
@@ -456,18 +473,7 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 // receiving server's range, it should reply with status WrongServer. If
 // the specified value is already contained in the list, it should reply
 // with status ItemExists.
-//type PutArgs struct {
-//	Key   string
-//	Value string
-//}
-//
-//type PutReply struct {
-//	Status Status
-//}
-//
 func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-
-	ss.LOGV.Printf("AppendToList Key: %s   Value: %s", args.Key, args.Value)
 
 	// check that the key is in the server's hash range
 	keyHash := libstore.StoreHash(strings.Split(args.Key, ":")[0])
@@ -486,7 +492,7 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 		prot := &protector{leaseOwners: list.New()}
 		prot.storeLock = new(sync.Mutex)
 		prot.bMLock = new(sync.Mutex)
-		ss.listProtectors[args.Key] = *prot
+		ss.listProtectors[args.Key] = prot
 
 		ss.listLock.Unlock()
 		reply.Status = storagerpc.OK
@@ -505,37 +511,85 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 
 	// revoke unexpired leases
 	l := prot.leaseOwners
+    lastExpiry := time.Now()
+    numToRevoke := 0
+    revokedChan := make(chan int, l.Len())
 	for l.Len() > 0 {
 		e := l.Front()
 
 		guard := time.Duration(storagerpc.LeaseGuardSeconds) * time.Second
+
+        if e.Value.(*owner).leaseEnd.Add(guard).After(lastExpiry) {
+            lastExpiry = e.Value.(*owner).leaseEnd.Add(guard)
+        }
+
 		// if unexpired
 		if e.Value.(*owner).leaseEnd.Add(guard).After(time.Now()) {
 
 			// prepare RPC
-			RLArgs := &storagerpc.RevokeLeaseArgs{args.Key}
-			RLReply := new(storagerpc.RevokeLeaseReply)
+			RLArgs := &storagerpc.RevokeLeaseArgs{Key: args.Key}
+			var RLReply storagerpc.RevokeLeaseReply
 
 			// get tcp connection appropriate libstore, from cache if possible
 			ss.libstoreLock.RLock()
-			libRPC, pres := ss.libstores[e.Value.(*owner).HostPort]
+			var libRPC *rpc.Client
+			var pres bool
+			libRPC, pres = ss.libstores[e.Value.(*owner).HostPort]
 			ss.libstoreLock.RUnlock()
 			if !pres { // add to cache if not present
-				libRPC, err := rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
-				ss.libstoreLock.Lock()
-				ss.libstores[e.Value.(*owner).HostPort] = libRPC
-				ss.libstoreLock.Unlock()
-				if err != nil {
-					return err
-				}
+
+		        ss.libstoreLock.Lock()
+                // check that connection wasn't added while we switched locks
+			    libRPC, pres = ss.libstores[e.Value.(*owner).HostPort]
+			    if !pres { // add to cache if not present
+				    var err error
+				    libRPC, err = rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
+				    ss.libstores[e.Value.(*owner).HostPort] = libRPC
+				    if err != nil {
+				        return err
+				    }
+                }
+			    ss.libstoreLock.Unlock()
 			}
 
-			go func() {
-				libRPC.Call("LeaseCallbacks.RevokeLease", RLArgs, RLReply)
-			}()
+            numToRevoke++
+
+	        go func() { // goroutine calls RevokeLease
+			    libRPC.Call("LeaseCallbacks.RevokeLease", RLArgs, &RLReply)
+                revokedChan <- 1
+	        }()
 		}
 		l.Remove(e)
 	}
+
+    doneChan := make(chan int, 10)
+
+	go func() { // goroutine counts down revokedLeases
+        for ; numToRevoke > 0; {
+		    select {
+		    case <-revokedChan:
+                numToRevoke--
+            case <- doneChan:
+                return
+            }
+        }
+        doneChan<-1
+        doneChan<-1
+	}()
+
+	go func() { // goroutine waits for last lease to expire
+        waitTime := lastExpiry.Sub(time.Now())
+        if int64(waitTime) > 0 {
+            select {
+		    case <-time.After(waitTime):
+            case <- doneChan:
+                return
+            }
+        }
+        doneChan<-1
+        doneChan<-1
+	}()
+    <-doneChan
 
 	// check whether item already exists
 	for i := 0; i < len(ss.listStore[args.Key]); i++ {
@@ -548,7 +602,6 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 			prot.storeLock.Unlock()
 
 			reply.Status = storagerpc.ItemExists
-			ss.LOGV.Println("AppendToList ItemExists")
 			return nil
 		}
 	}
@@ -571,18 +624,7 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 // receiving server's range, it should reply with status WrongServer. If
 // the specified value is not already contained in the list, it should reply
 // with status ItemNotFound.
-//type PutArgs struct {
-//	Key   string
-//	Value string
-//}
-//
-//type PutReply struct {
-//	Status Status
-//}
-//
 func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
-
-	ss.LOGV.Printf("RemoveFromList Key: %s   Value: %s", args.Key, args.Value)
 
 	// check that the key is in the server's hash range
 	keyHash := libstore.StoreHash(strings.Split(args.Key, ":")[0])
@@ -611,37 +653,85 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 
 	// revoke unexpired leases
 	l := prot.leaseOwners
+    lastExpiry := time.Now()
+    numToRevoke := 0
+    revokedChan := make(chan int, l.Len())
 	for l.Len() > 0 {
 		e := l.Front()
 
 		guard := time.Duration(storagerpc.LeaseGuardSeconds) * time.Second
+
+        if e.Value.(*owner).leaseEnd.Add(guard).After(lastExpiry) {
+            lastExpiry = e.Value.(*owner).leaseEnd.Add(guard)
+        }
+
 		// if unexpired
 		if e.Value.(*owner).leaseEnd.Add(guard).After(time.Now()) {
 
 			// prepare RPC
-			RLArgs := &storagerpc.RevokeLeaseArgs{args.Key}
-			RLReply := new(storagerpc.RevokeLeaseReply)
+			RLArgs := &storagerpc.RevokeLeaseArgs{Key: args.Key}
+			var RLReply storagerpc.RevokeLeaseReply
 
 			// get tcp connection appropriate libstore, from cache if possible
 			ss.libstoreLock.RLock()
-			libRPC, pres := ss.libstores[e.Value.(*owner).HostPort]
+			var libRPC *rpc.Client
+			var pres bool
+			libRPC, pres = ss.libstores[e.Value.(*owner).HostPort]
 			ss.libstoreLock.RUnlock()
 			if !pres { // add to cache if not present
-				libRPC, err := rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
-				ss.libstoreLock.Lock()
-				ss.libstores[e.Value.(*owner).HostPort] = libRPC
-				ss.libstoreLock.Unlock()
-				if err != nil {
-					return err
-				}
+
+		        ss.libstoreLock.Lock()
+                // check that connection wasn't added while we switched locks
+			    libRPC, pres = ss.libstores[e.Value.(*owner).HostPort]
+			    if !pres { // add to cache if not present
+				    var err error
+				    libRPC, err = rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
+				    ss.libstores[e.Value.(*owner).HostPort] = libRPC
+				    if err != nil {
+				        return err
+				    }
+                }
+			    ss.libstoreLock.Unlock()
 			}
 
-			go func() {
-				libRPC.Call("LeaseCallbacks.RevokeLease", RLArgs, RLReply)
-			}()
+            numToRevoke++
+
+	        go func() { // goroutine calls RevokeLease
+			    libRPC.Call("LeaseCallbacks.RevokeLease", RLArgs, &RLReply)
+                revokedChan <- 1
+	        }()
 		}
 		l.Remove(e)
 	}
+
+    doneChan := make(chan int, 10)
+
+	go func() { // goroutine counts down revokedLeases
+        for ; numToRevoke > 0; {
+		    select {
+		    case <-revokedChan:
+                numToRevoke--
+            case <- doneChan:
+                return
+            }
+        }
+        doneChan<-1
+        doneChan<-1
+	}()
+
+	go func() { // goroutine waits for last lease to expire
+        waitTime := lastExpiry.Sub(time.Now())
+        if int64(waitTime) > 0 {
+            select {
+		    case <-time.After(waitTime):
+            case <- doneChan:
+                return
+            }
+        }
+        doneChan<-1
+        doneChan<-1
+	}()
+    <-doneChan
 
 	found := false
 	// find item in list
@@ -665,7 +755,6 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 		reply.Status = storagerpc.OK
 	} else {
 		reply.Status = storagerpc.ItemNotFound
-		ss.LOGV.Println("RemoveFromList ItemNotFound")
 	}
 	return nil
 }
