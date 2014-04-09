@@ -3,12 +3,87 @@ package libstore
 import (
 	"errors"
 	"fmt"
+	"log"
+	"net/rpc"
+	"os"
+	"sort"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 )
 
+// struct that stores lease information about a key stored in local cache
+type LocalInfo struct {
+	LocalLease storagerpc.Lease // lease for a key
+	IssueTime  time.Time        // issue time (in unix nano seconds for the lease)
+}
+
 type libstore struct {
-	// TODO: implement this!
+	mode             LeaseMode                // mode of requesting lease
+	localSimpleStore map[string]string        // map that stores string to string mapping
+	localListStore   map[string]([]string)    // map that stores string to slice of string mapping
+	simpleRWMutex    *sync.RWMutex            // read/write lock to protect localSimpleStore
+	listRWMutex      *sync.RWMutex            // read/write lock to protect localListStore
+	simpleLocalInfo  map[string]*LocalInfo    // map that stores lease info of keys in localSimpleStore
+	listLocalInfo    map[string]*LocalInfo    // map that stores lease info of keys in localListStore
+	servers          []storagerpc.Node        // list of storage servers in the network
+	connections      map[string](*rpc.Client) // map that stores connections to storage servers(key: hostport)
+	connectionsLock  *sync.RWMutex            // read/write lock that protect connections map
+	queryCounts      map[string]int           // map that stores query counts for each key
+	queryCountsMutex *sync.Mutex              // lock to protext queryCounts map
+	libstoreLOGV     *log.Logger              // logger for libstore
+	myHostPort       string                   // callback hostport for the libstore
+}
+
+//Implement a sort interface for []storagerpc.Node
+type serverSlice []storagerpc.Node
+
+func (servers serverSlice) Len() int           { return len(servers) }
+func (servers serverSlice) Swap(i, j int)      { servers[i], servers[j] = servers[j], servers[i] }
+func (servers serverSlice) Less(i, j int) bool { return servers[i].NodeID < servers[j].NodeID }
+
+// This function contacts a storage server and saves the connection
+// if it is not in the list of saved connections.
+func contactServer(hostPort string,
+	connections map[string](*rpc.Client), connectionsLock *sync.RWMutex,
+	log *log.Logger) (*rpc.Client, error) {
+	// check whether the connection is already saved
+	var cli *rpc.Client
+	var exist bool
+
+	connectionsLock.RLock()
+	cli, exist = connections[hostPort]
+	connectionsLock.RUnlock()
+	if exist == false {
+		// the connection is not saved, create one and save it
+		var err error
+		cli, err = rpc.DialHTTP("tcp", hostPort)
+		if err != nil {
+			log.Printf("contactServer: error occurred while dialing. %s\n", err)
+			return nil, err
+		} else {
+			// save the connection
+			connectionsLock.Lock()
+			_, exist = connections[hostPort]
+			// check again so that no one else insert a connection for
+			// this server after we release read lock
+			if exist == false {
+				connections[hostPort] = cli
+			}
+			connectionsLock.Unlock()
+		}
+	}
+
+	return cli, nil
+}
+
+//for debug
+func (ls *libstore) printServers() {
+	for index := 0; index < len(ls.servers); index++ {
+		ls.libstoreLOGV.Printf("server: %s with id %d\n", ls.servers[index].HostPort, ls.servers[index].NodeID)
+	}
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -36,35 +111,372 @@ type libstore struct {
 // need to create a brand new HTTP handler to serve the requests (the Libstore may
 // simply reuse the TribServer's HTTP handler since the two run in the same process).
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
-	fmt.Printf("NewLibstore: hello world\n")
-	return nil, nil
+	// check parameter validity
+	if masterServerHostPort == "" {
+		fmt.Printf("invalid master server hostport\n")
+		return nil, errors.New("invalid master server hostport")
+	}
+
+	// initialize data structures and locks
+	lib := new(libstore)
+	lib.localSimpleStore = make(map[string]string)
+	lib.localListStore = make(map[string]([]string))
+	lib.simpleRWMutex = &sync.RWMutex{}
+	lib.listRWMutex = &sync.RWMutex{}
+	lib.simpleLocalInfo = make(map[string]*LocalInfo)
+	lib.listLocalInfo = make(map[string]*LocalInfo)
+	lib.connections = make(map[string](*rpc.Client))
+	lib.connectionsLock = &sync.RWMutex{}
+	lib.queryCounts = make(map[string]int)
+	lib.queryCountsMutex = &sync.Mutex{}
+	lib.myHostPort = myHostPort
+	lib.mode = mode
+
+	// create logger
+	var fileName string
+	if myHostPort != "" {
+		tempParts := strings.Split(myHostPort, ":")
+		fileName = "./" + tempParts[0] + tempParts[1] + ".txt"
+	} else {
+		fileName = "./libstore.txt"
+	}
+	logfile, _ := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0666)
+	lib.libstoreLOGV = log.New(logfile, "VERBOSE", log.Lmicroseconds|log.Lshortfile)
+
+	lib.libstoreLOGV.Printf("libstore %s: start logging\n", myHostPort)
+
+	// contact master storage server to get list of servers
+	count := 0
+	for count < 5 {
+		cli, err := contactServer(masterServerHostPort, lib.connections,
+			lib.connectionsLock, lib.libstoreLOGV)
+		if err != nil {
+			lib.libstoreLOGV.Printf("libstore %s: contactServer error.\n", err)
+			return nil, err
+		}
+		args := &storagerpc.GetServersArgs{}
+		var reply storagerpc.GetServersReply
+		err = cli.Call("StorageServer.GetServers", args, &reply)
+		if err != nil {
+			lib.libstoreLOGV.Printf("libstore: GetServers rpc error. %s\n", err)
+			return nil, err
+		} else {
+			if reply.Status == storagerpc.OK {
+				lib.servers = reply.Servers
+				sort.Sort(serverSlice(lib.servers))
+				lib.printServers()
+				return lib, nil
+			} else {
+				time.Sleep(1 * time.Second)
+			}
+		}
+		count = count + 1
+	}
+
+	return nil, errors.New("timed out when starting libstore")
 }
 
+// This function checks whether a lease expires or not.
+// It returns true if the lease expires. False otherwise.
+func checkExpiration(localCopy *LocalInfo) bool {
+	lease := localCopy.LocalLease
+	issueTime := localCopy.IssueTime
+	guard := time.Duration(lease.ValidSeconds) * time.Second
+	leaseEnd := issueTime.Add(guard)
+	if leaseEnd.After(time.Now()) == false {
+		// lease expired
+		return true
+	} else {
+		return false
+	}
+}
+
+// This function selects the appropriate storage server based
+// on the input key and returns the connection to that server.
+func (ls *libstore) selectServer(key string) *rpc.Client {
+	keyHash := StoreHash(key)
+	ls.libstoreLOGV.Printf("selectServer: keyHash is %d\n", keyHash)
+	var server storagerpc.Node = storagerpc.Node{"none", 0}
+
+	for index := 0; index < len(ls.servers)-1; index++ {
+		current := ls.servers[index]
+		nextNode := ls.servers[index+1]
+		if current.NodeID >= keyHash && keyHash <= nextNode.NodeID {
+			server = current
+		}
+	}
+
+	if server.HostPort == "none" {
+		server = ls.servers[0]
+	}
+
+	ls.libstoreLOGV.Printf("selectServer: server selected is %s with id %d\n", server.HostPort, server.NodeID)
+	var cli *rpc.Client
+	var exist bool
+
+	ls.connectionsLock.RLock()
+	cli, exist = ls.connections[server.HostPort]
+	ls.connectionsLock.RUnlock()
+	if exist == false {
+		// the connection is not saved, create one and save it
+		var err error
+		cli, err = rpc.DialHTTP("tcp", server.HostPort)
+		if err != nil {
+			fmt.Printf("selectServer: error while dialing %s\n", err)
+			return nil
+		} else {
+			// save the connection
+			ls.connectionsLock.Lock()
+			_, exist = ls.connections[server.HostPort]
+			// check again so that no one else insert a connection for
+			// this server after we release read lock
+			if exist == false {
+				ls.connections[server.HostPort] = cli
+			}
+			ls.connectionsLock.Unlock()
+		}
+	}
+
+	return cli
+}
+
+// This function calls the Get RPC function of storage server.
+func (ls *libstore) callGetRPC(key string, wantLease bool,
+	callBackPort string, reply *storagerpc.GetReply) error {
+	cli := ls.selectServer(key)
+	if cli == nil {
+		ls.libstoreLOGV.Printf("Get: server returned is nil\n")
+		return errors.New("no server selected")
+	} else {
+		args := &storagerpc.GetArgs{key, wantLease, callBackPort}
+		err := cli.Call("StorageServer.Get", args, reply)
+		return err
+	}
+
+}
+
+// This function handles the reply of the Get RPC function of
+// storage server.
+// create parameter is a flag that indicates whether the
+// key exists in localSimpleStore. create=1 means the key
+// doesn't exist and we need to create new entries in
+// both localSimpleStore and simpleLocalInfo map.
+func (ls *libstore) handleGetRPC(reply storagerpc.GetReply, key string,
+	wantLease bool, create int) (string, error) {
+	if reply.Status == storagerpc.OK {
+		if wantLease == true && reply.Lease.Granted == true {
+			// lease is granted by server. Update lease and local copy
+			ls.updateSimpleValueAndLease(key, reply, create)
+		}
+		// return value
+		return reply.Value, nil
+	} else {
+		if reply.Status == storagerpc.KeyNotFound {
+			return "", errors.New("key not found")
+		} else if reply.Status == storagerpc.WrongServer {
+			return "", errors.New("wrong server")
+		} else {
+			return "", errors.New("unexpected status")
+		}
+	}
+}
+
+// This function updates value and lease for key in the
+// localSimpleStore.
+// create parameter is a flag that indicates whether the
+// key exists in localSimpleStore. create=1 means the key
+// doesn't exist and we need to create new entries in
+// both localSimpleStore and simpleLocalInfo map.
+func (ls *libstore) updateSimpleValueAndLease(key string,
+	reply storagerpc.GetReply, create int) {
+	if create == 0 {
+		// key already exists, simply update
+		ls.simpleRWMutex.Lock()
+		newLocalInfo := ls.simpleLocalInfo[key]
+		newLocalInfo.LocalLease = reply.Lease
+		newLocalInfo.IssueTime = time.Now()
+		ls.localSimpleStore[key] = reply.Value
+		ls.simpleRWMutex.Unlock()
+	} else {
+		// key doesn't exist, create new entries
+		ls.simpleRWMutex.Lock()
+		newInfo := &LocalInfo{reply.Lease, time.Now()}
+		ls.simpleLocalInfo[key] = newInfo
+		ls.localSimpleStore[key] = reply.Value
+		ls.simpleRWMutex.Unlock()
+	}
+}
+
+// This function sets the wantLease variable based
+// on lease mode and query count.
+func (ls *libstore) setWantLease(count int) bool {
+	if ls.mode == Never {
+		return false
+	} else if ls.mode == Always {
+		return true
+	} else {
+		if count >= storagerpc.QueryCacheThresh {
+			return true
+		} else {
+			return false
+		}
+	}
+}
+
+// Right now, this function returns error when key is not
+// found on storage server or when libstore contacts the
+// wrong server.
 func (ls *libstore) Get(key string) (string, error) {
-	return "", errors.New("not implemented")
+	// update query count for the key
+	ls.queryCountsMutex.Lock()
+	_, exist := ls.queryCounts[key]
+	if exist == false {
+		ls.queryCounts[key] = 1
+	} else {
+		ls.queryCounts[key] += 1
+	}
+	count := ls.queryCounts[key]
+	ls.queryCountsMutex.Unlock()
+
+	// obtain value from local cache if possible.
+	// otherwise, contact storage server
+	ls.simpleRWMutex.RLock()
+	localInfo, pres := ls.simpleLocalInfo[key]
+	if pres == true {
+		// key exists in local cache.
+		if localInfo == nil || checkExpiration(localInfo) == true {
+			// lease expires
+			ls.simpleRWMutex.RUnlock()
+			wantLease := ls.setWantLease(count)
+			// contact storage server
+			var reply storagerpc.GetReply
+			getErr := ls.callGetRPC(key, wantLease, ls.myHostPort, &reply)
+			if getErr != nil {
+				return "", getErr
+			} else {
+				// check reply
+				val, err := ls.handleGetRPC(reply, key, wantLease, 0)
+				return val, err
+			}
+		} else {
+			// lease is still valid
+			val := ls.localSimpleStore[key]
+			ls.simpleRWMutex.RUnlock()
+			return val, nil
+		}
+	} else {
+		// key does not exist
+		ls.simpleRWMutex.RUnlock()
+		wantLease := ls.setWantLease(count)
+		// call storage server Get RPC
+		var reply storagerpc.GetReply
+		getErr := ls.callGetRPC(key, wantLease, ls.myHostPort, &reply)
+		if getErr != nil {
+			return "", getErr
+		} else {
+			// check reply
+			val, err := ls.handleGetRPC(reply, key, wantLease, 1)
+			return val, err
+		}
+	}
 }
 
 func (ls *libstore) Put(key, value string) error {
-	return errors.New("not implemented")
+	cli := ls.selectServer(key)
+	if cli == nil {
+		ls.libstoreLOGV.Printf("Put: server returned is nil\n")
+		return errors.New("no server selected")
+	} else {
+		args := &storagerpc.PutArgs{key, value}
+		var reply storagerpc.PutReply
+		err := cli.Call("StorageServer.Put", args, &reply)
+		if err != nil {
+			return err
+		} else {
+			if reply.Status != storagerpc.OK {
+				if reply.Status == storagerpc.WrongServer {
+					return errors.New("wrong server")
+				} else {
+					return errors.New("unexpected reply status")
+				}
+			} else {
+				return nil
+			}
+		}
+	}
 }
 
 func (ls *libstore) GetList(key string) ([]string, error) {
-	return nil, errors.New("not implemented")
+	// update query count for the key
+	ls.queryCountsMutex.Lock()
+	_, exist := ls.queryCounts[key]
+	if exist == false {
+		ls.queryCounts[key] = 1
+	} else {
+		ls.queryCounts[key] += 1
+	}
+	count := ls.queryCounts[key]
+	ls.queryCountsMutex.Unlock()
+
+	// obtain value from local cache if possible.
+	// otherwise, contact storage server
 }
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
-	return errors.New("not implemented")
+	cli := ls.selectServer(key)
+	if cli == nil {
+		ls.libstoreLOGV.Printf("RemoveFromList: server returned is nil\n")
+		return errors.New("no server selected")
+	} else {
+		args := &storagerpc.PutArgs{key, removeItem}
+		var reply storagerpc.PutReply
+		err := cli.Call("StorageServer.RemoveFromList", args, &reply)
+		if err != nil {
+			return err
+		} else {
+			if reply.Status != storagerpc.OK {
+				if reply.Status == storagerpc.WrongServer {
+					return errors.New("wrong server")
+				} else if reply.Status == storagerpc.ItemNotFound {
+					return errors.New("item not found")
+				} else {
+					return errors.New("unexpected reply status")
+				}
+			} else {
+				return nil
+			}
+		}
+	}
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
-	return errors.New("not implemented")
+	cli := ls.selectServer(key)
+	if cli == nil {
+		ls.libstoreLOGV.Printf("AppendToList: server returned is nil\n")
+		return errors.New("no server selected")
+	} else {
+		args := &storagerpc.PutArgs{key, newItem}
+		var reply storagerpc.PutReply
+		err := cli.Call("StorageServer.AppendToList", args, &reply)
+		if err != nil {
+			return err
+		} else {
+			if reply.Status != storagerpc.OK {
+				if reply.Status == storagerpc.WrongServer {
+					return errors.New("wrong server")
+				} else if reply.Status == storagerpc.ItemExists {
+					return errors.New("Item exists")
+				} else {
+					return errors.New("unexpected reply status")
+				}
+			} else {
+				return nil
+			}
+		}
+	}
 }
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
-	return errors.New("not implemented")
-}
-
-// This function is used by TribServer to handle CreateUser request.
-func HandleCreateUser() {
-	fmt.Println("handleCreateUser: called\n")
+	fmt.Printf("revoke lease called\n")
+	return nil
 }
