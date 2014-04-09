@@ -251,19 +251,30 @@ func checkExpiration(localCopy *LocalInfo) bool {
 // on the input key and returns the connection to that server.
 func (ls *libstore) selectServer(key string) *rpc.Client {
 	keyHash := StoreHash(key)
-	ls.libstoreLOGV.Printf("selectServer: keyHash is %d\n", keyHash)
+	ls.libstoreLOGV.Printf("selectServer: key is %s, keyHash is %d\n", key, keyHash)
 	var server storagerpc.Node = storagerpc.Node{"none", 0}
 
 	for index := 0; index < len(ls.servers)-1; index++ {
 		current := ls.servers[index]
 		nextNode := ls.servers[index+1]
-		if current.NodeID >= keyHash && keyHash <= nextNode.NodeID {
+		ls.libstoreLOGV.Printf("selectServer: current Node ID is %d, next Node ID is %d\n", current.NodeID, nextNode.NodeID)
+		if current.NodeID == keyHash {
 			server = current
+			break
+		}
+		if current.NodeID < keyHash && keyHash < nextNode.NodeID {
+			//fmt.Printf("here\n")
+			server = nextNode
 		}
 	}
 
 	if server.HostPort == "none" {
-		server = ls.servers[0]
+		length := len(ls.servers)
+		if keyHash == ls.servers[length-1].NodeID {
+			server = ls.servers[length-1]
+		} else {
+			server = ls.servers[0]
+		}
 	}
 
 	ls.libstoreLOGV.Printf("selectServer: server selected is %s with id %d\n", server.HostPort, server.NodeID)
@@ -274,8 +285,10 @@ func (ls *libstore) selectServer(key string) *rpc.Client {
 	cli, exist = ls.connections[server.HostPort]
 	ls.connectionsLock.RUnlock()
 	if exist == false {
+		ls.libstoreLOGV.Printf("selectServer: server connection isn't saved\n")
 		// the connection is not saved, create one and save it
 		var err error
+		ls.libstoreLOGV.Printf("selectServer: about to contact server %s\n", server.HostPort)
 		cli, err = rpc.DialHTTP("tcp", server.HostPort)
 		if err != nil {
 			fmt.Printf("selectServer: error while dialing %s\n", err)
@@ -299,7 +312,7 @@ func (ls *libstore) selectServer(key string) *rpc.Client {
 // This function calls the Get RPC function of storage server.
 func (ls *libstore) callGetRPC(key string, wantLease bool,
 	callBackPort string, reply *storagerpc.GetReply) error {
-	cli := ls.selectServer(key)
+	cli := ls.selectServer(strings.Split(key, ":")[0])
 	if cli == nil {
 		ls.libstoreLOGV.Printf("callGetRPC: server returned is nil\n")
 		return errors.New("no server selected")
@@ -339,7 +352,7 @@ func (ls *libstore) handleGetRPC(reply storagerpc.GetReply, key string,
 // This function calls the GetList RPC function of storage server.
 func (ls *libstore) callGetListRPC(key string, wantLease bool,
 	callBackPort string, reply *storagerpc.GetListReply) error {
-	cli := ls.selectServer(key)
+	cli := ls.selectServer(strings.Split(key, ":")[0])
 	if cli == nil {
 		ls.libstoreLOGV.Printf("callGetListRPC: server returned is nil\n")
 		return errors.New("no server selected")
@@ -523,7 +536,7 @@ func (ls *libstore) Get(key string) (string, error) {
 }
 
 func (ls *libstore) Put(key, value string) error {
-	cli := ls.selectServer(key)
+	cli := ls.selectServer(strings.Split(key, ":")[0])
 	if cli == nil {
 		ls.libstoreLOGV.Printf("Put: server returned is nil\n")
 		return errors.New("no server selected")
@@ -603,7 +616,7 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 }
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
-	cli := ls.selectServer(key)
+	cli := ls.selectServer(strings.Split(key, ":")[0])
 	if cli == nil {
 		ls.libstoreLOGV.Printf("RemoveFromList: server returned is nil\n")
 		return errors.New("no server selected")
@@ -630,7 +643,7 @@ func (ls *libstore) RemoveFromList(key, removeItem string) error {
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
-	cli := ls.selectServer(key)
+	cli := ls.selectServer(strings.Split(key, ":")[0])
 	if cli == nil {
 		ls.libstoreLOGV.Printf("AppendToList: server returned is nil\n")
 		return errors.New("no server selected")
