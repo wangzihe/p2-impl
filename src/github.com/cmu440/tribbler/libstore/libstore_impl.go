@@ -150,6 +150,7 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	rpc.RegisterName("LeaseCallbacks", librpc.Wrap(lib))
 
 	// contact master storage server to get list of servers
+	lib.libstoreLOGV.Printf("start contacting master server\n")
 	count := 0
 	for count < 5 {
 		cli, err := contactServer(masterServerHostPort, lib.connections,
@@ -166,6 +167,7 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 			return nil, err
 		} else {
 			if reply.Status == storagerpc.OK {
+				lib.libstoreLOGV.Printf("get ok response from master storage server\n")
 				lib.servers = reply.Servers
 				sort.Sort(serverSlice(lib.servers))
 				lib.printServers()
@@ -220,12 +222,14 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 				}()
 				return lib, nil
 			} else {
+				lib.libstoreLOGV.Printf("get NotReady response from master storage server\n")
 				time.Sleep(1 * time.Second)
 			}
 		}
 		count = count + 1
 	}
 
+	lib.libstoreLOGV.Printf("timed out when starting libstore\n")
 	return nil, errors.New("timed out when starting libstore")
 }
 
@@ -289,7 +293,7 @@ func (ls *libstore) selectServer(key string) *rpc.Client {
 		// the connection is not saved, create one and save it
 		var err error
 		ls.libstoreLOGV.Printf("selectServer: about to contact server %s\n", server.HostPort)
-	    dialKey := strings.Split(server.HostPort, ":")[1] + ":" + strings.Split(server.HostPort, ":")[2]
+		dialKey := strings.Split(server.HostPort, ":")[1] + ":" + strings.Split(server.HostPort, ":")[2]
 		cli, err = rpc.DialHTTP("tcp", dialKey)
 		if err != nil {
 			ls.libstoreLOGV.Printf("selectServer: error while dialing: %s\n", err)

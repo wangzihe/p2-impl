@@ -2,22 +2,22 @@ package tribserver
 
 import (
 	"encoding/json"
-	"log"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/rpc"
+	"os"
 	"sort"
 	"strconv"
 	"time"
-    "os"
 
 	"github.com/cmu440/tribbler/libstore"
 	"github.com/cmu440/tribbler/rpc/tribrpc"
 )
 
 type tribServer struct {
-	Lib libstore.Libstore //Libstore of the tribserver
+	Lib  libstore.Libstore //Libstore of the tribserver
 	LOGV *log.Logger
 }
 
@@ -76,7 +76,7 @@ func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.Cr
 	if _, err := ts.Lib.Get(key); err != nil { // key does not already exist
 		err = ts.Lib.Put(key, args.UserID) // add the key
 		if err != nil {
-            ts.LOGV.Printf("Lib.Get(key) returned error: %s\n", err.Error())
+			ts.LOGV.Printf("Lib.Get(key) returned error: %s\n", err.Error())
 			return err
 		}
 		reply.Status = tribrpc.OK
@@ -149,7 +149,9 @@ func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply
 	// get User's subscription list
 	subs, err := ts.Lib.GetList(args.UserID + ":sub")
 	if err != nil {
-		return err
+		reply.Status = tribrpc.OK
+		reply.UserIDs = make([]string, 0)
+		return nil
 	}
 	reply.Status = tribrpc.OK
 	reply.UserIDs = subs

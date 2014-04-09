@@ -2,7 +2,7 @@ package storageserver
 
 import (
 	"container/list"
-	//"fmt"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -23,6 +23,7 @@ type storageServer struct {
 	registerMutex             *sync.Mutex
 	numRegistered, toRegister int
 	allRegisteredChan         chan bool
+	ready                     bool // indicator for whether the ring is ready. True means ready
 
 	// hash ring info
 	nodes          []storagerpc.Node
@@ -73,6 +74,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	server.numRegistered = 1 // include the master server
 	server.maxKey = nodeID
 	server.allRegisteredChan = make(chan bool)
+	server.ready = false
 	node := &storagerpc.Node{HostPort: "localhost:" + strconv.Itoa(port), NodeID: nodeID}
 
 	server.simpleLock = new(sync.Mutex)
@@ -83,9 +85,10 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	server.listProtectors = make(map[string](*protector))
 	server.libstores = make(map[string](*rpc.Client))
 	server.libstoreLock = new(sync.RWMutex)
+	fmt.Printf("new storage server\n")
 
 	// logging stuff
-	fileName := "./localhost:" + strconv.Itoa(port) + ".txt"
+	fileName := "./localhost" + strconv.Itoa(port) + ".txt"
 	if masterServerHostPort == "" {
 		fileName = "./master.txt"
 	}
@@ -112,46 +115,48 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	go http.Serve(listener, nil)
 
 	// if master, wait until all Nodes have registered
+	server.LOGV.Printf("about to set up the ring. number of nodes is %d\n", numNodes)
 	if masterServerHostPort == "" {
 		server.nodes = make([]storagerpc.Node, numNodes)
 		server.nodes[0] = *node // register master as first node
 		if numNodes > 1 {
+			server.LOGV.Printf("waiting for all nodes to be registered\n")
 			<-server.allRegisteredChan // wait until all nodes are registered
 		}
 		server.minKey = prevNodeID(nodeID, server.nodes)
+		server.LOGV.Printf("finished setting the ring.\n")
 		return server, nil
 
 		// if slave, call RegisterServer every second until acknowledged
 	} else {
 
 		// prepare to call RegisterServer
-	    var masterRPC *rpc.Client
-        for {
-		    masterRPC, err = rpc.DialHTTP("tcp", masterServerHostPort)
-            if err == nil {
-                break
-            }
-		    <-time.After(time.Second)
-        }
+		var masterRPC *rpc.Client
+		for {
+			masterRPC, err = rpc.DialHTTP("tcp", masterServerHostPort)
+			if err == nil {
+				break
+			}
+			<-time.After(time.Second)
+		}
 
 		for {
-
 			args := &storagerpc.RegisterArgs{ServerInfo: *node}
 			reply := &storagerpc.RegisterReply{Status: storagerpc.NotReady}
 			err := masterRPC.Call("StorageServer.RegisterServer", args, reply)
 
-            if err != nil && reply.Status == storagerpc.OK {
-			    server.nodes = reply.Servers
-                server.LOGV.Printf("All %d hashes are:\n", numNodes)
-	            for i := 0; i < numNodes; i++ {
-                    server.LOGV.Printf("%d: ", i)
-                    server.LOGV.Printf("%d\n", server.nodes[i].NodeID)
-                }
-                server.LOGV.Printf("Done printing hashes\n")
-			    server.minKey = prevNodeID(nodeID, server.nodes)
-			    masterRPC.Close()
-			    return server, nil
-            }
+			if err == nil && reply.Status == storagerpc.OK {
+				server.nodes = reply.Servers
+				server.LOGV.Printf("All %d hashes are:\n", len(server.nodes))
+				for i := 0; i < len(server.nodes); i++ {
+					server.LOGV.Printf("%d: ", i)
+					server.LOGV.Printf("%d\n", server.nodes[i].NodeID)
+				}
+				server.LOGV.Printf("Done printing hashes\n")
+				server.minKey = prevNodeID(nodeID, server.nodes)
+				masterRPC.Close()
+				return server, nil
+			}
 
 			<-time.After(time.Second)
 		}
@@ -191,6 +196,7 @@ func prevNodeID(nodeID uint32, nodes []storagerpc.Node) uint32 {
 
 func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *storagerpc.RegisterReply) error {
 
+	ss.LOGV.Printf("register server called\n")
 	unRegistered := true
 	ss.registerMutex.Lock()
 	for i := 0; i < ss.numRegistered; i++ {
@@ -208,8 +214,12 @@ func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *st
 	// set status to OK and notify main goroutine if all nodes are registered
 	if ss.numRegistered == ss.toRegister {
 		reply.Status = storagerpc.OK
-        reply.Servers = ss.nodes
-		ss.allRegisteredChan <- true
+		reply.Servers = ss.nodes
+		if ss.ready == false {
+			// should only pass signal to master server once. Otherwise, it might block
+			ss.allRegisteredChan <- true
+			ss.ready = true
+		}
 	} else {
 		reply.Status = storagerpc.NotReady
 	}
@@ -217,6 +227,7 @@ func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *st
 }
 
 func (ss *storageServer) GetServers(args *storagerpc.GetServersArgs, reply *storagerpc.GetServersReply) error {
+	ss.LOGV.Printf("GetServers called\n")
 	if ss.numRegistered == ss.toRegister {
 		reply.Status = storagerpc.OK
 		reply.Servers = ss.nodes
@@ -245,7 +256,7 @@ func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetRepl
 	// check that the key is in the server's hash range
 	keyHash := libstore.StoreHash(strings.Split(args.Key, ":")[0])
 	if !inRange(keyHash, ss.minKey, ss.maxKey) {
-	    ss.LOGV.Printf("WrongServer, with Key: %s\n and hash: %d", args.Key, keyHash)
+		ss.LOGV.Printf("WrongServer, with Key: %s\n and hash: %d", args.Key, keyHash)
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
@@ -283,7 +294,7 @@ func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetRepl
 		reply.Status = storagerpc.OK
 		reply.Value = val
 
-	    //ss.LOGV.Printf("Got: %s\n", val)
+		//ss.LOGV.Printf("Got: %s\n", val)
 		return nil
 	}
 
@@ -304,7 +315,7 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 	// check that the key is in the server's hash range
 	keyHash := libstore.StoreHash(strings.Split(args.Key, ":")[0])
 	if !inRange(keyHash, ss.minKey, ss.maxKey) {
-	    ss.LOGV.Printf("WrongServer, with Key: %s\n and hash: %d", args.Key, keyHash)
+		ss.LOGV.Printf("WrongServer, with Key: %s\n and hash: %d", args.Key, keyHash)
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
@@ -359,7 +370,7 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 	// check that the key is in the server's hash range
 	keyHash := libstore.StoreHash(strings.Split(args.Key, ":")[0])
 	if !inRange(keyHash, ss.minKey, ss.maxKey) {
-	    ss.LOGV.Printf("WrongServer, with Key: %s\n and hash: %d", args.Key, keyHash)
+		ss.LOGV.Printf("WrongServer, with Key: %s\n and hash: %d", args.Key, keyHash)
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
@@ -498,7 +509,7 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 	// check that the key is in the server's hash range
 	keyHash := libstore.StoreHash(strings.Split(args.Key, ":")[0])
 	if !inRange(keyHash, ss.minKey, ss.maxKey) {
-	    ss.LOGV.Printf("WrongServer, with Key: %s\n and hash: %d", args.Key, keyHash)
+		ss.LOGV.Printf("WrongServer, with Key: %s\n and hash: %d", args.Key, keyHash)
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
@@ -652,7 +663,7 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 	// check that the key is in the server's hash range
 	keyHash := libstore.StoreHash(strings.Split(args.Key, ":")[0])
 	if !inRange(keyHash, ss.minKey, ss.maxKey) {
-	    ss.LOGV.Printf("WrongServer, with Key: %s\n and hash: %d", args.Key, keyHash)
+		ss.LOGV.Printf("WrongServer, with Key: %s\n and hash: %d", args.Key, keyHash)
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
