@@ -73,7 +73,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	server.numRegistered = 1 // include the master server
 	server.maxKey = nodeID
 	server.allRegisteredChan = make(chan bool)
-	node := &storagerpc.Node{HostPort: "storageServer:localhost:" + strconv.Itoa(port), NodeID: nodeID}
+	node := &storagerpc.Node{HostPort: "localhost:" + strconv.Itoa(port), NodeID: nodeID}
 
 	server.simpleLock = new(sync.Mutex)
 	server.listLock = new(sync.Mutex)
@@ -92,6 +92,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	logfile, _ := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0666)
 	server.LOGV = log.New(logfile, "VERBOSE", log.Lmicroseconds|log.Lshortfile)
 	server.LOGV.Printf("Starting storageServer: %s\n", net.JoinHostPort("localhost", strconv.Itoa(port)))
+	server.LOGV.Printf("with hash: %d\n", nodeID)
 
 	// create the server socket that will listen for incoming RPCs.
 	listener, err := net.Listen("tcp", net.JoinHostPort("localhost", strconv.Itoa(port)))
@@ -124,7 +125,6 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	} else {
 
 		// prepare to call RegisterServer
-        var test bool
 	    var masterRPC *rpc.Client
         for {
 		    masterRPC, err = rpc.DialHTTP("tcp", masterServerHostPort)
@@ -134,27 +134,26 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 		    <-time.After(time.Second)
         }
 
-		doneChan := make(chan *storagerpc.RegisterReply, 5)
 		for {
-			go func() {
 
-				args := &storagerpc.RegisterArgs{ServerInfo: *node}
-				reply := &storagerpc.RegisterReply{Status: storagerpc.NotReady}
+			args := &storagerpc.RegisterArgs{ServerInfo: *node}
+			reply := &storagerpc.RegisterReply{Status: storagerpc.NotReady}
+			err := masterRPC.Call("StorageServer.RegisterServer", args, reply)
 
-                test = test
+            if err != nil && reply.Status == storagerpc.OK {
+			    server.nodes = reply.Servers
+                server.LOGV.Printf("All %d hashes are:\n", numNodes)
+	            for i := 0; i < numNodes; i++ {
+                    server.LOGV.Printf("%d: ", i)
+                    server.LOGV.Printf("%d\n", server.nodes[i].NodeID)
+                }
+                server.LOGV.Printf("Done printing hashes\n")
+			    server.minKey = prevNodeID(nodeID, server.nodes)
+			    masterRPC.Close()
+			    return server, nil
+            }
 
-				masterRPC.Call("StorageServer.RegisterServer", args, reply)
-				doneChan <- reply
-			}()
-
-			select {
-			case <-time.After(time.Duration(1000) * time.Millisecond):
-			case reply := <-doneChan:
-				server.nodes = reply.Servers
-				server.minKey = prevNodeID(nodeID, server.nodes)
-				masterRPC.Close()
-				return server, nil
-			}
+			<-time.After(time.Second)
 		}
 	}
 }
@@ -209,6 +208,7 @@ func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *st
 	// set status to OK and notify main goroutine if all nodes are registered
 	if ss.numRegistered == ss.toRegister {
 		reply.Status = storagerpc.OK
+        reply.Servers = ss.nodes
 		ss.allRegisteredChan <- true
 	} else {
 		reply.Status = storagerpc.NotReady
@@ -240,9 +240,12 @@ func inRange(hash, minKey, maxKey uint32) bool {
 // KeyNotFound.
 func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetReply) error {
 
+	//ss.LOGV.Printf("Called Get Key: %s\n", args.Key)
+
 	// check that the key is in the server's hash range
 	keyHash := libstore.StoreHash(strings.Split(args.Key, ":")[0])
 	if !inRange(keyHash, ss.minKey, ss.maxKey) {
+	    ss.LOGV.Printf("WrongServer, with Key: %s\n and hash: %d", args.Key, keyHash)
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
@@ -279,6 +282,8 @@ func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetRepl
 
 		reply.Status = storagerpc.OK
 		reply.Value = val
+
+	    //ss.LOGV.Printf("Got: %s\n", val)
 		return nil
 	}
 
@@ -294,9 +299,12 @@ func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetRepl
 // KeyNotFound.
 func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.GetListReply) error {
 
+	//ss.LOGV.Printf("Called GetList Key: %s\n", args.Key)
+
 	// check that the key is in the server's hash range
 	keyHash := libstore.StoreHash(strings.Split(args.Key, ":")[0])
 	if !inRange(keyHash, ss.minKey, ss.maxKey) {
+	    ss.LOGV.Printf("WrongServer, with Key: %s\n and hash: %d", args.Key, keyHash)
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
@@ -346,9 +354,12 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 // reply with status WrongServer.
 func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
 
+	//ss.LOGV.Printf("Called Put Key: %s Value: %s\n", args.Key, args.Value)
+
 	// check that the key is in the server's hash range
 	keyHash := libstore.StoreHash(strings.Split(args.Key, ":")[0])
 	if !inRange(keyHash, ss.minKey, ss.maxKey) {
+	    ss.LOGV.Printf("WrongServer, with Key: %s\n and hash: %d", args.Key, keyHash)
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
@@ -482,9 +493,12 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 // with status ItemExists.
 func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
 
+	//ss.LOGV.Printf("Called AppendToList Key: %s Value: %s\n", args.Key, args.Value)
+
 	// check that the key is in the server's hash range
 	keyHash := libstore.StoreHash(strings.Split(args.Key, ":")[0])
 	if !inRange(keyHash, ss.minKey, ss.maxKey) {
+	    ss.LOGV.Printf("WrongServer, with Key: %s\n and hash: %d", args.Key, keyHash)
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
@@ -633,9 +647,12 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 // with status ItemNotFound.
 func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storagerpc.PutReply) error {
 
+	//ss.LOGV.Printf("Called RemoveFromList Key: %s Value: %s\n", args.Key, args.Value)
+
 	// check that the key is in the server's hash range
 	keyHash := libstore.StoreHash(strings.Split(args.Key, ":")[0])
 	if !inRange(keyHash, ss.minKey, ss.maxKey) {
+	    ss.LOGV.Printf("WrongServer, with Key: %s\n and hash: %d", args.Key, keyHash)
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
