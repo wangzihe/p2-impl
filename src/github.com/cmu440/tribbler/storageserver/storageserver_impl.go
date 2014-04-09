@@ -120,7 +120,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 		server.minKey = prevNodeID(nodeID, server.nodes)
 		return server, nil
 
-    // if slave, call RegisterServer every second until acknowledged
+		// if slave, call RegisterServer every second until acknowledged
 	} else {
 
 		// prepare to call RegisterServer
@@ -128,26 +128,26 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 		if err != nil {
 			return nil, err
 		}
-        doneChan := make(chan *storagerpc.RegisterReply, 5)
+		doneChan := make(chan *storagerpc.RegisterReply, 5)
 		for {
 
 			go func() {
 
-		        args := &storagerpc.RegisterArgs{ServerInfo: *node}
-		        reply := &storagerpc.RegisterReply{Status: storagerpc.NotReady}
+				args := &storagerpc.RegisterArgs{ServerInfo: *node}
+				reply := &storagerpc.RegisterReply{Status: storagerpc.NotReady}
 
 				masterRPC.Call("StorageServer.RegisterServer", args, reply)
-                doneChan<-reply
+				doneChan <- reply
 			}()
 
-            select {
-		    case <-time.After(time.Duration(1000) * time.Millisecond):
-            case reply := <- doneChan:
+			select {
+			case <-time.After(time.Duration(1000) * time.Millisecond):
+			case reply := <-doneChan:
 				server.nodes = reply.Servers
 				server.minKey = prevNodeID(nodeID, server.nodes)
 				masterRPC.Close()
 				return server, nil
-            }
+			}
 		}
 	}
 }
@@ -353,7 +353,7 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 
 		// make new protector
 		prot := &protector{leaseOwners: list.New()}
-        prot.beingModified = false
+		prot.beingModified = false
 		prot.storeLock = new(sync.Mutex)
 		prot.bMLock = new(sync.Mutex)
 		ss.simpleProtectors[args.Key] = prot
@@ -375,17 +375,17 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 
 	// revoke unexpired leases
 	l := prot.leaseOwners
-    lastExpiry := time.Now()
-    numToRevoke := 0
-    revokedChan := make(chan int, l.Len())
+	lastExpiry := time.Now()
+	numToRevoke := 0
+	revokedChan := make(chan int, l.Len())
 	for l.Len() > 0 {
 		e := l.Front()
 
 		guard := time.Duration(storagerpc.LeaseGuardSeconds) * time.Second
 
-        if e.Value.(*owner).leaseEnd.Add(guard).After(lastExpiry) {
-            lastExpiry = e.Value.(*owner).leaseEnd.Add(guard)
-        }
+		if e.Value.(*owner).leaseEnd.Add(guard).After(lastExpiry) {
+			lastExpiry = e.Value.(*owner).leaseEnd.Add(guard)
+		}
 
 		// if unexpired
 		if e.Value.(*owner).leaseEnd.Add(guard).After(time.Now()) {
@@ -402,58 +402,58 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 			ss.libstoreLock.RUnlock()
 			if !pres { // add to cache if not present
 
-		        ss.libstoreLock.Lock()
-                // check that connection wasn't added while we switched locks
-			    libRPC, pres = ss.libstores[e.Value.(*owner).HostPort]
-			    if !pres { // add to cache if not present
-				    var err error
-				    libRPC, err = rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
-				    ss.libstores[e.Value.(*owner).HostPort] = libRPC
-				    if err != nil {
-				        return err
-				    }
-                }
-			    ss.libstoreLock.Unlock()
+				ss.libstoreLock.Lock()
+				// check that connection wasn't added while we switched locks
+				libRPC, pres = ss.libstores[e.Value.(*owner).HostPort]
+				if !pres { // add to cache if not present
+					var err error
+					libRPC, err = rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
+					ss.libstores[e.Value.(*owner).HostPort] = libRPC
+					if err != nil {
+						return err
+					}
+				}
+				ss.libstoreLock.Unlock()
 			}
 
-            numToRevoke++
+			numToRevoke++
 
-	        go func() { // goroutine calls RevokeLease
-			    libRPC.Call("LeaseCallbacks.RevokeLease", RLArgs, &RLReply)
-                revokedChan <- 1
-	        }()
+			go func() { // goroutine calls RevokeLease
+				libRPC.Call("LeaseCallbacks.RevokeLease", RLArgs, &RLReply)
+				revokedChan <- 1
+			}()
 		}
 		l.Remove(e)
 	}
 
-    doneChan := make(chan int, 10)
+	doneChan := make(chan int, 10)
 
 	go func() { // goroutine counts down revokedLeases
-        for ; numToRevoke > 0; {
-		    select {
-		    case <-revokedChan:
-                numToRevoke--
-            case <- doneChan:
-                return
-            }
-        }
-        doneChan<-1
-        doneChan<-1
+		for numToRevoke > 0 {
+			select {
+			case <-revokedChan:
+				numToRevoke--
+			case <-doneChan:
+				return
+			}
+		}
+		doneChan <- 1
+		doneChan <- 1
 	}()
 
 	go func() { // goroutine waits for last lease to expire
-        waitTime := lastExpiry.Sub(time.Now())
-        if int64(waitTime) > 0 {
-            select {
-		    case <-time.After(waitTime):
-            case <- doneChan:
-                return
-            }
-        }
-        doneChan<-1
-        doneChan<-1
+		waitTime := lastExpiry.Sub(time.Now())
+		if int64(waitTime) > 0 {
+			select {
+			case <-time.After(waitTime):
+			case <-doneChan:
+				return
+			}
+		}
+		doneChan <- 1
+		doneChan <- 1
 	}()
-    <-doneChan
+	<-doneChan
 
 	// modify/enter value
 	ss.simpleStore[args.Key] = args.Value
@@ -511,17 +511,17 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 
 	// revoke unexpired leases
 	l := prot.leaseOwners
-    lastExpiry := time.Now()
-    numToRevoke := 0
-    revokedChan := make(chan int, l.Len())
+	lastExpiry := time.Now()
+	numToRevoke := 0
+	revokedChan := make(chan int, l.Len())
 	for l.Len() > 0 {
 		e := l.Front()
 
 		guard := time.Duration(storagerpc.LeaseGuardSeconds) * time.Second
 
-        if e.Value.(*owner).leaseEnd.Add(guard).After(lastExpiry) {
-            lastExpiry = e.Value.(*owner).leaseEnd.Add(guard)
-        }
+		if e.Value.(*owner).leaseEnd.Add(guard).After(lastExpiry) {
+			lastExpiry = e.Value.(*owner).leaseEnd.Add(guard)
+		}
 
 		// if unexpired
 		if e.Value.(*owner).leaseEnd.Add(guard).After(time.Now()) {
@@ -538,58 +538,58 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 			ss.libstoreLock.RUnlock()
 			if !pres { // add to cache if not present
 
-		        ss.libstoreLock.Lock()
-                // check that connection wasn't added while we switched locks
-			    libRPC, pres = ss.libstores[e.Value.(*owner).HostPort]
-			    if !pres { // add to cache if not present
-				    var err error
-				    libRPC, err = rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
-				    ss.libstores[e.Value.(*owner).HostPort] = libRPC
-				    if err != nil {
-				        return err
-				    }
-                }
-			    ss.libstoreLock.Unlock()
+				ss.libstoreLock.Lock()
+				// check that connection wasn't added while we switched locks
+				libRPC, pres = ss.libstores[e.Value.(*owner).HostPort]
+				if !pres { // add to cache if not present
+					var err error
+					libRPC, err = rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
+					ss.libstores[e.Value.(*owner).HostPort] = libRPC
+					if err != nil {
+						return err
+					}
+				}
+				ss.libstoreLock.Unlock()
 			}
 
-            numToRevoke++
+			numToRevoke++
 
-	        go func() { // goroutine calls RevokeLease
-			    libRPC.Call("LeaseCallbacks.RevokeLease", RLArgs, &RLReply)
-                revokedChan <- 1
-	        }()
+			go func() { // goroutine calls RevokeLease
+				libRPC.Call("LeaseCallbacks.RevokeLease", RLArgs, &RLReply)
+				revokedChan <- 1
+			}()
 		}
 		l.Remove(e)
 	}
 
-    doneChan := make(chan int, 10)
+	doneChan := make(chan int, 10)
 
 	go func() { // goroutine counts down revokedLeases
-        for ; numToRevoke > 0; {
-		    select {
-		    case <-revokedChan:
-                numToRevoke--
-            case <- doneChan:
-                return
-            }
-        }
-        doneChan<-1
-        doneChan<-1
+		for numToRevoke > 0 {
+			select {
+			case <-revokedChan:
+				numToRevoke--
+			case <-doneChan:
+				return
+			}
+		}
+		doneChan <- 1
+		doneChan <- 1
 	}()
 
 	go func() { // goroutine waits for last lease to expire
-        waitTime := lastExpiry.Sub(time.Now())
-        if int64(waitTime) > 0 {
-            select {
-		    case <-time.After(waitTime):
-            case <- doneChan:
-                return
-            }
-        }
-        doneChan<-1
-        doneChan<-1
+		waitTime := lastExpiry.Sub(time.Now())
+		if int64(waitTime) > 0 {
+			select {
+			case <-time.After(waitTime):
+			case <-doneChan:
+				return
+			}
+		}
+		doneChan <- 1
+		doneChan <- 1
 	}()
-    <-doneChan
+	<-doneChan
 
 	// check whether item already exists
 	for i := 0; i < len(ss.listStore[args.Key]); i++ {
@@ -653,17 +653,17 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 
 	// revoke unexpired leases
 	l := prot.leaseOwners
-    lastExpiry := time.Now()
-    numToRevoke := 0
-    revokedChan := make(chan int, l.Len())
+	lastExpiry := time.Now()
+	numToRevoke := 0
+	revokedChan := make(chan int, l.Len())
 	for l.Len() > 0 {
 		e := l.Front()
 
 		guard := time.Duration(storagerpc.LeaseGuardSeconds) * time.Second
 
-        if e.Value.(*owner).leaseEnd.Add(guard).After(lastExpiry) {
-            lastExpiry = e.Value.(*owner).leaseEnd.Add(guard)
-        }
+		if e.Value.(*owner).leaseEnd.Add(guard).After(lastExpiry) {
+			lastExpiry = e.Value.(*owner).leaseEnd.Add(guard)
+		}
 
 		// if unexpired
 		if e.Value.(*owner).leaseEnd.Add(guard).After(time.Now()) {
@@ -680,58 +680,58 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 			ss.libstoreLock.RUnlock()
 			if !pres { // add to cache if not present
 
-		        ss.libstoreLock.Lock()
-                // check that connection wasn't added while we switched locks
-			    libRPC, pres = ss.libstores[e.Value.(*owner).HostPort]
-			    if !pres { // add to cache if not present
-				    var err error
-				    libRPC, err = rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
-				    ss.libstores[e.Value.(*owner).HostPort] = libRPC
-				    if err != nil {
-				        return err
-				    }
-                }
-			    ss.libstoreLock.Unlock()
+				ss.libstoreLock.Lock()
+				// check that connection wasn't added while we switched locks
+				libRPC, pres = ss.libstores[e.Value.(*owner).HostPort]
+				if !pres { // add to cache if not present
+					var err error
+					libRPC, err = rpc.DialHTTP("tcp", e.Value.(*owner).HostPort)
+					ss.libstores[e.Value.(*owner).HostPort] = libRPC
+					if err != nil {
+						return err
+					}
+				}
+				ss.libstoreLock.Unlock()
 			}
 
-            numToRevoke++
+			numToRevoke++
 
-	        go func() { // goroutine calls RevokeLease
-			    libRPC.Call("LeaseCallbacks.RevokeLease", RLArgs, &RLReply)
-                revokedChan <- 1
-	        }()
+			go func() { // goroutine calls RevokeLease
+				libRPC.Call("LeaseCallbacks.RevokeLease", RLArgs, &RLReply)
+				revokedChan <- 1
+			}()
 		}
 		l.Remove(e)
 	}
 
-    doneChan := make(chan int, 10)
+	doneChan := make(chan int, 10)
 
 	go func() { // goroutine counts down revokedLeases
-        for ; numToRevoke > 0; {
-		    select {
-		    case <-revokedChan:
-                numToRevoke--
-            case <- doneChan:
-                return
-            }
-        }
-        doneChan<-1
-        doneChan<-1
+		for numToRevoke > 0 {
+			select {
+			case <-revokedChan:
+				numToRevoke--
+			case <-doneChan:
+				return
+			}
+		}
+		doneChan <- 1
+		doneChan <- 1
 	}()
 
 	go func() { // goroutine waits for last lease to expire
-        waitTime := lastExpiry.Sub(time.Now())
-        if int64(waitTime) > 0 {
-            select {
-		    case <-time.After(waitTime):
-            case <- doneChan:
-                return
-            }
-        }
-        doneChan<-1
-        doneChan<-1
+		waitTime := lastExpiry.Sub(time.Now())
+		if int64(waitTime) > 0 {
+			select {
+			case <-time.After(waitTime):
+			case <-doneChan:
+				return
+			}
+		}
+		doneChan <- 1
+		doneChan <- 1
 	}()
-    <-doneChan
+	<-doneChan
 
 	found := false
 	// find item in list
