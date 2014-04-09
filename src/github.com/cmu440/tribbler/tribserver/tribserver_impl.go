@@ -91,7 +91,8 @@ func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tri
 	// add TargetUser to User subscription list
 	err := ts.Lib.AppendToList(args.UserID+":sub", args.TargetUserID)
 	if err != nil {
-		return err
+		reply.Status = tribrpc.Exists
+		return nil
 	}
 	reply.Status = tribrpc.OK
 	return nil
@@ -115,7 +116,8 @@ func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *
 	// remove TargetUser from User's subscription list
 	err := ts.Lib.RemoveFromList(args.UserID+":sub", args.TargetUserID)
 	if err != nil {
-		return err
+		reply.Status = tribrpc.NoSuchTargetUser
+		return nil
 	}
 	reply.Status = tribrpc.OK
 	return nil
@@ -190,7 +192,10 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 	// get list of UserID's tribbleIDs
 	tribbleIDs, err := ts.Lib.GetList(args.UserID + ":tribble")
 	if err != nil {
-		return err
+		// no tribbles posted by the user
+		reply.Tribbles = make([]tribrpc.Tribble, 0)
+		reply.Status = tribrpc.OK
+		return nil
 	}
 
 	// sort the user's tribbleIDs in reverse chronological order
@@ -243,17 +248,25 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 	// get User's subscripton list
 	subs, err := ts.Lib.GetList(args.UserID + ":sub")
 	if err != nil {
-		return err
+		// no subscriptions yet
+		reply.Tribbles = make([]tribrpc.Tribble, 0)
+		reply.Status = tribrpc.OK
+		return nil
 	}
 
 	// get all tribbleIDs for users on User's subscripton list
 	tribbleIDs := make([]string, 0)
 	for i := 0; i < len(subs); i++ {
-		newTribbleIDs, err := ts.Lib.GetList(args.UserID + ":tribble")
-		if err != nil {
-			return err
+		newTribbleIDs, err := ts.Lib.GetList(subs[i] + ":tribble")
+		if err == nil {
+			tribbleIDs = append(tribbleIDs, newTribbleIDs...)
 		}
-		tribbleIDs = append(tribbleIDs, newTribbleIDs...)
+	}
+	if len(tribbleIDs) == 0 {
+		// no tribbles.
+		reply.Tribbles = make([]tribrpc.Tribble, 0)
+		reply.Status = tribrpc.OK
+		return nil
 	}
 
 	// rest of code is identical to that of GetTribbles
