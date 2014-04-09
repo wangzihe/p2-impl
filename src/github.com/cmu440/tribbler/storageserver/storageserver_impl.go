@@ -2,12 +2,12 @@ package storageserver
 
 import (
 	"container/list"
-	"fmt"
-	//"log"
+	//"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/rpc"
-	//"os"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,7 +42,7 @@ type storageServer struct {
 	libstores    map[string](*rpc.Client)
 	libstoreLock *sync.RWMutex
 
-	//LOGV *log.Logger
+	LOGV *log.Logger
 }
 
 type owner struct {
@@ -65,7 +65,6 @@ type protector struct {
 // This function should return only once all storage servers have joined the ring,
 // and should return a non-nil error if the storage server could not be started.
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
-	fmt.Printf("new server created\n")
 
 	// initialize the storageServer struct
 	server := new(storageServer)
@@ -74,7 +73,7 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	server.numRegistered = 1 // include the master server
 	server.maxKey = nodeID
 	server.allRegisteredChan = make(chan bool)
-	node := &storagerpc.Node{HostPort: "localhost:" + strconv.Itoa(port), NodeID: nodeID}
+	node := &storagerpc.Node{HostPort: "storageServer:localhost:" + strconv.Itoa(port), NodeID: nodeID}
 
 	server.simpleLock = new(sync.Mutex)
 	server.listLock = new(sync.Mutex)
@@ -86,12 +85,13 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	server.libstoreLock = new(sync.RWMutex)
 
 	// logging stuff
-	//fileName := "./" + strconv.Itoa(port) + ".txt"
-	//if masterServerHostPort == "" {
-	//	fileName = "./master.txt"
-	//}
-	//logfile, _ := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0666)
-	//server.LOGV = log.New(logfile, "VERBOSE", log.Lmicroseconds|log.Lshortfile)
+	fileName := "./localhost:" + strconv.Itoa(port) + ".txt"
+	if masterServerHostPort == "" {
+		fileName = "./master.txt"
+	}
+	logfile, _ := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0666)
+	server.LOGV = log.New(logfile, "VERBOSE", log.Lmicroseconds|log.Lshortfile)
+	server.LOGV.Printf("Starting storageServer: %s\n", net.JoinHostPort("localhost", strconv.Itoa(port)))
 
 	// create the server socket that will listen for incoming RPCs.
 	listener, err := net.Listen("tcp", net.JoinHostPort("localhost", strconv.Itoa(port)))
@@ -124,17 +124,24 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	} else {
 
 		// prepare to call RegisterServer
-		masterRPC, err := rpc.DialHTTP("tcp", masterServerHostPort)
-		if err != nil {
-			return nil, err
-		}
+        var test bool
+	    var masterRPC *rpc.Client
+        for {
+		    masterRPC, err = rpc.DialHTTP("tcp", masterServerHostPort)
+            if err == nil {
+                break
+            }
+		    <-time.After(time.Second)
+        }
+
 		doneChan := make(chan *storagerpc.RegisterReply, 5)
 		for {
-
 			go func() {
 
 				args := &storagerpc.RegisterArgs{ServerInfo: *node}
 				reply := &storagerpc.RegisterReply{Status: storagerpc.NotReady}
+
+                test = test
 
 				masterRPC.Call("StorageServer.RegisterServer", args, reply)
 				doneChan <- reply

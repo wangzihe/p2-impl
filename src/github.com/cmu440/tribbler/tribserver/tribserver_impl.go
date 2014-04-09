@@ -2,6 +2,7 @@ package tribserver
 
 import (
 	"encoding/json"
+	"log"
 	"fmt"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"time"
+    "os"
 
 	"github.com/cmu440/tribbler/libstore"
 	"github.com/cmu440/tribbler/rpc/tribrpc"
@@ -16,6 +18,7 @@ import (
 
 type tribServer struct {
 	Lib libstore.Libstore //Libstore of the tribserver
+	LOGV *log.Logger
 }
 
 // NewTribServer creates, starts and returns a new TribServer. masterServerHostPort
@@ -25,6 +28,7 @@ type tribServer struct {
 //
 // For hints on how to properly setup RPC, see the rpc/tribrpc package.
 func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) {
+
 	server := new(tribServer)
 	lib, err := libstore.NewLibstore(masterServerHostPort, myHostPort,
 		libstore.Never)
@@ -33,6 +37,12 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 		return nil, err
 	}
 	server.Lib = lib
+
+	// logging stuff
+	fileName := "aTribServer" + ".txt"
+	logfile, _ := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0666)
+	server.LOGV = log.New(logfile, "VERBOSE", log.Lmicroseconds|log.Lshortfile)
+	server.LOGV.Printf("Starting tribServer: %s\n", myHostPort)
 
 	// create the server socket that will listen for incoming RPCs.
 	listener, err := net.Listen("tcp", myHostPort)
@@ -59,11 +69,14 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 // Replies with status Exists if the user has previously been created.
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {
 
+	ts.LOGV.Printf("Called CreateUser on tribServer\n")
+
 	key := args.UserID + ":create"
 
 	if _, err := ts.Lib.Get(key); err != nil { // key does not already exist
 		err = ts.Lib.Put(key, args.UserID) // add the key
 		if err != nil {
+            ts.LOGV.Printf("Lib.Get(key) returned error: %s\n", err.Error())
 			return err
 		}
 		reply.Status = tribrpc.OK
