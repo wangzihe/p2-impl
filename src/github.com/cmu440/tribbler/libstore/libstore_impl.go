@@ -293,8 +293,7 @@ func (ls *libstore) selectServer(key string) *rpc.Client {
 		// the connection is not saved, create one and save it
 		var err error
 		ls.libstoreLOGV.Printf("selectServer: about to contact server %s\n", server.HostPort)
-		dialKey := strings.Split(server.HostPort, ":")[1] + ":" + strings.Split(server.HostPort, ":")[2]
-		cli, err = rpc.DialHTTP("tcp", dialKey)
+		cli, err = rpc.DialHTTP("tcp", server.HostPort)
 		if err != nil {
 			ls.libstoreLOGV.Printf("selectServer: error while dialing: %s\n", err)
 			return nil

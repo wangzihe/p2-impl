@@ -1,6 +1,6 @@
 #!/bin/bash
 
-if [ -z $GOPATH ]; then
+if [ -z "$GOPATH" ]; then
     echo "FAIL: GOPATH environment variable is not set"
     exit 1
 fi
@@ -34,14 +34,14 @@ fi
 
 # Pick random port between [10000, 20000).
 STORAGE_PORT=$(((RANDOM % 10000) + 10000))
-STORAGE_SERVER=$GOPATH/bin/srunner
-STRESS_CLIENT=$GOPATH/bin/stresstest
-TRIB_SERVER=$GOPATH/bin/trunner
+STORAGE_SERVER="$GOPATH"/bin/srunner
+STRESS_CLIENT="$GOPATH"/bin/stresstest
+TRIB_SERVER="$GOPATH"/bin/trunner
 
 function startStorageServers {
     N=${#STORAGE_ID[@]}
     # Start master storage server.
-    ${STORAGE_SERVER} -N=${N} -id=${STORAGE_ID[0]} -port=${STORAGE_PORT} &> /dev/null &
+    "${STORAGE_SERVER}" -N=${N} -id=${STORAGE_ID[0]} -port=${STORAGE_PORT} &
     STORAGE_SERVER_PID[0]=$!
     # Start slave storage servers.
     if [ "$N" -gt 1 ]
@@ -49,7 +49,7 @@ function startStorageServers {
         for i in `seq 1 $((N - 1))`
         do
 	    STORAGE_SLAVE_PORT=$(((RANDOM % 10000) + 10000))
-            ${STORAGE_SERVER} -port=${STORAGE_SLAVE_PORT} -id=${STORAGE_ID[$i]} -master="localhost:${STORAGE_PORT}" &> /dev/null &
+            "${STORAGE_SERVER}" -port=${STORAGE_SLAVE_PORT} -id=${STORAGE_ID[$i]} -master="localhost:${STORAGE_PORT}" &
             STORAGE_SERVER_PID[$i]=$!
         done
     fi
@@ -70,7 +70,7 @@ function startTribServers {
     do
         # Pick random port between [10000, 20000).
         TRIB_PORT[$i]=$(((RANDOM % 10000) + 10000))
-        ${TRIB_SERVER} -port=${TRIB_PORT[$i]} "localhost:${STORAGE_PORT}" &> /dev/null &
+        "${TRIB_SERVER}" -port=${TRIB_PORT[$i]} "localhost:${STORAGE_PORT}" &> /dev/null &
         TRIB_SERVER_PID[$i]=$!
     done
     sleep 5
@@ -96,7 +96,7 @@ function testStress {
     do
         for CLIENT in `seq 0 $((CLIENT_COUNT[$USER] - 1))`
         do
-            ${STRESS_CLIENT} -port=${TRIB_PORT[$((C % M))]} -clientId=${CLIENT} ${USER} ${K} & 
+            "${STRESS_CLIENT}" -port=${TRIB_PORT[$((C % M))]} -clientId=${CLIENT} ${USER} ${K} & 
             STRESS_CLIENT_PID[$C]=$!
             # Setup background thread to kill client upon timeout.
             sleep ${TIMEOUT} && kill -9 ${STRESS_CLIENT_PID[$C]} &> /dev/null &
@@ -222,14 +222,14 @@ function testStressDupUserMultipleTribMultipleStorage {
 # Run tests.
 PASS_COUNT=0
 FAIL_COUNT=0
-testStressSingleClientSingleTribSingleStorage
+#testStressSingleClientSingleTribSingleStorage
 testStressSingleClientSingleTribMultipleStorage
-testStressMultipleClientSingleTribSingleStorage
-testStressMultipleClientSingleTribMultipleStorage
-testStressMultipleClientMultipleTribSingleStorage
-testStressMultipleClientMultipleTribMultipleStorage
-testStressDoubleClientMultipleTribMultipleStorage
-testStressDupUserMultipleTribSingleStorage
-testStressDupUserMultipleTribMultipleStorage
+#testStressMultipleClientSingleTribSingleStorage
+#testStressMultipleClientSingleTribMultipleStorage
+#testStressMultipleClientMultipleTribSingleStorage
+#testStressMultipleClientMultipleTribMultipleStorage
+#testStressDoubleClientMultipleTribMultipleStorage
+#testStressDupUserMultipleTribSingleStorage
+#testStressDupUserMultipleTribMultipleStorage
 
 echo "Passed (${PASS_COUNT}/$((PASS_COUNT + FAIL_COUNT))) tests"

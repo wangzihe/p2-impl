@@ -2,7 +2,7 @@ package storageserver
 
 import (
 	"container/list"
-	"fmt"
+	//"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -85,7 +85,6 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	server.listProtectors = make(map[string](*protector))
 	server.libstores = make(map[string](*rpc.Client))
 	server.libstoreLock = new(sync.RWMutex)
-	fmt.Printf("new storage server\n")
 
 	// logging stuff
 	fileName := "./localhost" + strconv.Itoa(port) + ".txt"
