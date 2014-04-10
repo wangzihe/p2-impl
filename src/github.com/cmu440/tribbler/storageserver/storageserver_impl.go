@@ -3,11 +3,12 @@ package storageserver
 import (
 	"container/list"
 	//"fmt"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
-	"os"
+	//"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -87,12 +88,14 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 	server.libstoreLock = new(sync.RWMutex)
 
 	// logging stuff
-	fileName := "./localhost" + strconv.Itoa(port) + ".txt"
-	if masterServerHostPort == "" {
-		fileName = "./master.txt"
-	}
-	logfile, _ := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0666)
-	server.LOGV = log.New(logfile, "VERBOSE", log.Lmicroseconds|log.Lshortfile)
+	/*
+		fileName := "./localhost" + strconv.Itoa(port) + ".txt"
+		if masterServerHostPort == "" {
+			fileName = "./master.txt"
+		}
+	*/
+	//logfile, _ := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0666)
+	server.LOGV = log.New(ioutil.Discard, "VERBOSE", log.Lmicroseconds|log.Lshortfile)
 	server.LOGV.Printf("Starting storageServer: %s\n", net.JoinHostPort("localhost", strconv.Itoa(port)))
 	server.LOGV.Printf("with hash: %d\n", nodeID)
 

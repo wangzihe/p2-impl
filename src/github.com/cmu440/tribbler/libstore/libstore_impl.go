@@ -3,9 +3,10 @@ package libstore
 import (
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/rpc"
-	"os"
+	//"os"
 	"sort"
 	"strings"
 	"sync"
@@ -112,6 +113,7 @@ func (ls *libstore) printServers() {
 // need to create a brand new HTTP handler to serve the requests (the Libstore may
 // simply reuse the TribServer's HTTP handler since the two run in the same process).
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
+	fmt.Printf("create new libstore\n")
 	// check parameter validity
 	if masterServerHostPort == "" {
 		fmt.Printf("invalid master server hostport\n")
@@ -134,15 +136,17 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	lib.mode = mode
 
 	// create logger
-	var fileName string
-	if myHostPort != "" {
-		tempParts := strings.Split(myHostPort, ":")
-		fileName = "./libstore:" + tempParts[0] + tempParts[1] + ".txt"
-	} else {
-		fileName = "./libstore.txt"
-	}
-	logfile, _ := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0666)
-	lib.libstoreLOGV = log.New(logfile, "VERBOSE", log.Lmicroseconds|log.Lshortfile)
+	/*
+		var fileName string
+		if myHostPort != "" {
+			tempParts := strings.Split(myHostPort, ":")
+			fileName = "./libstore:" + tempParts[0] + tempParts[1] + ".txt"
+		} else {
+			fileName = "./libstore.txt"
+		}
+	*/
+	//logfile, _ := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0666)
+	lib.libstoreLOGV = log.New(ioutil.Discard, "VERBOSE", log.Lmicroseconds|log.Lshortfile)
 
 	lib.libstoreLOGV.Printf("libstore %s: start logging\n", myHostPort)
 
@@ -261,7 +265,6 @@ func (ls *libstore) selectServer(key string) *rpc.Client {
 	for index := 0; index < len(ls.servers)-1; index++ {
 		current := ls.servers[index]
 		nextNode := ls.servers[index+1]
-		ls.libstoreLOGV.Printf("selectServer: current Node ID is %d, next Node ID is %d\n", current.NodeID, nextNode.NodeID)
 		if current.NodeID == keyHash {
 			server = current
 			break
@@ -289,10 +292,8 @@ func (ls *libstore) selectServer(key string) *rpc.Client {
 	cli, exist = ls.connections[server.HostPort]
 	ls.connectionsLock.RUnlock()
 	if exist == false {
-		ls.libstoreLOGV.Printf("selectServer: server connection isn't saved\n")
 		// the connection is not saved, create one and save it
 		var err error
-		ls.libstoreLOGV.Printf("selectServer: about to contact server %s\n", server.HostPort)
 		cli, err = rpc.DialHTTP("tcp", server.HostPort)
 		if err != nil {
 			ls.libstoreLOGV.Printf("selectServer: error while dialing: %s\n", err)
@@ -316,6 +317,7 @@ func (ls *libstore) selectServer(key string) *rpc.Client {
 // This function calls the Get RPC function of storage server.
 func (ls *libstore) callGetRPC(key string, wantLease bool,
 	callBackPort string, reply *storagerpc.GetReply) error {
+	ls.libstoreLOGV.Printf("callGetRPC: enter function with key = %s\n", key)
 	cli := ls.selectServer(strings.Split(key, ":")[0])
 	if cli == nil {
 		ls.libstoreLOGV.Printf("callGetRPC: server returned is nil\n")
@@ -323,6 +325,9 @@ func (ls *libstore) callGetRPC(key string, wantLease bool,
 	} else {
 		args := &storagerpc.GetArgs{key, wantLease, callBackPort}
 		err := cli.Call("StorageServer.Get", args, reply)
+		if err != nil {
+			ls.libstoreLOGV.Printf("callGetRPC: Storage server Get rpc failed. %s\n", err)
+		}
 		return err
 	}
 }
@@ -344,10 +349,13 @@ func (ls *libstore) handleGetRPC(reply storagerpc.GetReply, key string,
 		return reply.Value, nil
 	} else {
 		if reply.Status == storagerpc.KeyNotFound {
+			ls.libstoreLOGV.Printf("handleGetRPC: key not found\n")
 			return "", errors.New("key not found")
 		} else if reply.Status == storagerpc.WrongServer {
+			ls.libstoreLOGV.Printf("handleGetRPC: wrong server\n")
 			return "", errors.New("wrong server")
 		} else {
+			ls.libstoreLOGV.Printf("handleGetRPC: unexpected status\n")
 			return "", errors.New("unexpected status")
 		}
 	}
@@ -356,6 +364,7 @@ func (ls *libstore) handleGetRPC(reply storagerpc.GetReply, key string,
 // This function calls the GetList RPC function of storage server.
 func (ls *libstore) callGetListRPC(key string, wantLease bool,
 	callBackPort string, reply *storagerpc.GetListReply) error {
+	ls.libstoreLOGV.Printf("callGetListRPC: enter function with key %s\n", key)
 	cli := ls.selectServer(strings.Split(key, ":")[0])
 	if cli == nil {
 		ls.libstoreLOGV.Printf("callGetListRPC: server returned is nil\n")
@@ -363,6 +372,9 @@ func (ls *libstore) callGetListRPC(key string, wantLease bool,
 	} else {
 		args := &storagerpc.GetArgs{key, wantLease, callBackPort}
 		err := cli.Call("StorageServer.GetList", args, reply)
+		if err != nil {
+			ls.libstoreLOGV.Printf("callGetListRPC: storage server GetList rpc failed. %s\n", err)
+		}
 		return err
 	}
 }
@@ -384,10 +396,13 @@ func (ls *libstore) handleGetListRPC(reply storagerpc.GetListReply,
 		return reply.Value, nil
 	} else {
 		if reply.Status == storagerpc.KeyNotFound {
+			ls.libstoreLOGV.Printf("handleGetListRPC: key not found\n")
 			return nil, errors.New("key not found")
 		} else if reply.Status == storagerpc.WrongServer {
+			ls.libstoreLOGV.Printf("handleGetListRPC: wrong server\n")
 			return nil, errors.New("wrong server")
 		} else {
+			ls.libstoreLOGV.Printf("handleGetListRPC: unexpected status\n")
 			return nil, errors.New("unexpected status")
 		}
 	}
@@ -433,6 +448,7 @@ func (ls *libstore) updateSimpleValueAndLease(key string,
 	reply storagerpc.GetReply, create int) {
 	if create == 0 {
 		// key already exists, simply update
+		//fmt.Printf("update cache lease\n")
 		ls.simpleRWMutex.Lock()
 		//fmt.Printf("Get: lock write lock\n")
 		newLocalInfo := ls.simpleLocalInfo[key]
@@ -446,6 +462,7 @@ func (ls *libstore) updateSimpleValueAndLease(key string,
 		ls.simpleRWMutex.Unlock()
 		//fmt.Printf("Get: unlock write lock\n")
 	} else {
+		//fmt.Printf("store new entry in cache\n")
 		// key doesn't exist, create new entries
 		ls.simpleRWMutex.Lock()
 		//fmt.Printf("Get: lock write lock\n")
@@ -540,6 +557,7 @@ func (ls *libstore) Get(key string) (string, error) {
 }
 
 func (ls *libstore) Put(key, value string) error {
+	ls.libstoreLOGV.Printf("Put: enter function with key = %s, value = %s\n", key, value)
 	cli := ls.selectServer(strings.Split(key, ":")[0])
 	if cli == nil {
 		ls.libstoreLOGV.Printf("Put: server returned is nil\n")
@@ -547,6 +565,7 @@ func (ls *libstore) Put(key, value string) error {
 	} else {
 		args := &storagerpc.PutArgs{key, value}
 		var reply storagerpc.PutReply
+		ls.libstoreLOGV.Printf("Put: calling storage server put for key, value pair (%s, %s)\n", key, value)
 		err := cli.Call("StorageServer.Put", args, &reply)
 		if err != nil {
 			return err
@@ -558,6 +577,7 @@ func (ls *libstore) Put(key, value string) error {
 					return errors.New("unexpected reply status")
 				}
 			} else {
+				ls.libstoreLOGV.Printf("Put: finished putting key, value pair (%s, %s)\n", key, value)
 				return nil
 			}
 		}
@@ -620,6 +640,7 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 }
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
+	ls.libstoreLOGV.Printf("enter RemoveFromList function: key = %s, removeItem = %s\n", key, removeItem)
 	cli := ls.selectServer(strings.Split(key, ":")[0])
 	if cli == nil {
 		ls.libstoreLOGV.Printf("RemoveFromList: server returned is nil\n")
@@ -647,6 +668,7 @@ func (ls *libstore) RemoveFromList(key, removeItem string) error {
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
+	ls.libstoreLOGV.Printf("AppendToList: enter function with key = %s, newItem = %s\n", key, newItem)
 	cli := ls.selectServer(strings.Split(key, ":")[0])
 	if cli == nil {
 		ls.libstoreLOGV.Printf("AppendToList: server returned is nil\n")
@@ -654,6 +676,7 @@ func (ls *libstore) AppendToList(key, newItem string) error {
 	} else {
 		args := &storagerpc.PutArgs{key, newItem}
 		var reply storagerpc.PutReply
+		ls.libstoreLOGV.Printf("AppendToList: about to call rpc to store key, value pair (%s, %s)\n", key, newItem)
 		err := cli.Call("StorageServer.AppendToList", args, &reply)
 		if err != nil {
 			return err

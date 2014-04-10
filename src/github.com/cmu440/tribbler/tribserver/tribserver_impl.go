@@ -3,11 +3,12 @@ package tribserver
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
-	"os"
+	//"os"
 	"sort"
 	"strconv"
 	"time"
@@ -39,9 +40,9 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 	server.Lib = lib
 
 	// logging stuff
-	fileName := "aTribServer" + ".txt"
-	logfile, _ := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0666)
-	server.LOGV = log.New(logfile, "VERBOSE", log.Lmicroseconds|log.Lshortfile)
+	//fileName := "TribServer" + myHostPort + ".txt"
+	//logfile, _ := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0666)
+	server.LOGV = log.New(ioutil.Discard, "VERBOSE", log.Lmicroseconds|log.Lshortfile)
 	server.LOGV.Printf("Starting tribServer: %s\n", myHostPort)
 
 	// create the server socket that will listen for incoming RPCs.
@@ -270,45 +271,57 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 	}
 
 	// get all tribbleIDs for users on User's subscripton list
-	tribbleIDs := make([]string, 0)
+
+	localMap := make(map[string]([]string))
+	var totalLength int = 0
 	for i := 0; i < len(subs); i++ {
 		newTribbleIDs, err := ts.Lib.GetList(subs[i] + ":tribble")
 		if err == nil {
-			tribbleIDs = append(tribbleIDs, newTribbleIDs...)
+			localMap[subs[i]] = newTribbleIDs
+			totalLength += len(localMap[subs[i]])
 		}
 	}
-	if len(tribbleIDs) == 0 {
+
+	tribbleIDs := make([]string, totalLength)
+	if totalLength == 0 {
 		// no tribbles.
 		reply.Tribbles = make([]tribrpc.Tribble, 0)
 		reply.Status = tribrpc.OK
 		return nil
-	}
-
-	// rest of code is identical to that of GetTribbles
-
-	// sort the user's tribbleIDs in reverse chronological order
-	sort.Sort(sort.Reverse(sort.StringSlice(tribbleIDs)))
-
-	// allocate space for Tribbles
-	numTribs := 100
-	if len(tribbleIDs) < 100 {
-		numTribs = len(tribbleIDs)
-	}
-	tribbles := make([]tribrpc.Tribble, numTribs)
-
-	// get latest Tribbles from storageServer and unmarshall them
-	for i := 0; i < numTribs; i++ {
-		unmarshalled, err := ts.Lib.Get(tribbleIDs[i])
-		if err != nil {
-			return err
+	} else {
+		var start int = 0
+		for k, _ := range localMap {
+			temp := localMap[k]
+			for index := 0; index < len(temp); index++ {
+				tribbleIDs[start] = temp[index]
+				start += 1
+			}
 		}
-		err = json.Unmarshal([]byte(unmarshalled), &(tribbles[i]))
-		if err != nil {
-			return err
-		}
-	}
 
-	reply.Tribbles = tribbles
-	reply.Status = tribrpc.OK
-	return nil
+		// sort the user's tribbleIDs in reverse chronological order
+		sort.Sort(sort.Reverse(sort.StringSlice(tribbleIDs)))
+
+		// allocate space for Tribbles
+		numTribs := 100
+		if len(tribbleIDs) < 100 {
+			numTribs = len(tribbleIDs)
+		}
+		tribbles := make([]tribrpc.Tribble, numTribs)
+
+		// get latest Tribbles from storageServer and unmarshall them
+		for i := 0; i < numTribs; i++ {
+			unmarshalled, err := ts.Lib.Get(tribbleIDs[i])
+			if err != nil {
+				return err
+			}
+			err = json.Unmarshal([]byte(unmarshalled), &(tribbles[i]))
+			if err != nil {
+				return err
+			}
+		}
+
+		reply.Tribbles = tribbles
+		reply.Status = tribrpc.OK
+		return nil
+	}
 }
